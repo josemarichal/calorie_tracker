@@ -3,7 +3,7 @@ name: Build Android APK
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+  workflow_dispatch:
 
 jobs:
   build:
@@ -13,7 +13,6 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # Caching helps speed up subsequent builds by saving the heavy Android SDK/NDK
     - name: Cache Buildozer global directory
       uses: actions/cache@v4
       with:
@@ -33,7 +32,13 @@ jobs:
         sudo apt update
         sudo apt install -y git zip unzip openjdk-17-jdk python3-pip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev
         pip3 install --user --upgrade buildozer cython virtualenv
-        
+
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+      with:
+        api-level: 33
+        ndk-version: r28c
+
     - name: Build with Buildozer
       run: |
         export PATH=$PATH:~/.local/bin
