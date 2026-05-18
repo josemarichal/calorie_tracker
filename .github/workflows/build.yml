@@ -13,19 +13,20 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    # Busted cache key with 'v2' to force a fresh download of the Android SDK
     - name: Cache Buildozer global directory
       uses: actions/cache@v4
       with:
         path: .buildozer_global
-        key: buildozer-global-${{ hashFiles('buildozer.spec') }}
+        key: buildozer-global-v2-${{ hashFiles('buildozer.spec') }}
         restore-keys: |
-          buildozer-global-
+          buildozer-global-v2-
 
     - name: Cache Buildozer directory
       uses: actions/cache@v4
       with:
         path: .buildozer
-        key: ${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+        key: ${{ runner.os }}-v2-${{ hashFiles('buildozer.spec') }}
 
     - name: Install dependencies
       run: |
@@ -39,22 +40,13 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
 
-    - name: Setup Android SDK
-      uses: android-actions/setup-android@v3
-      with:
-        api-level: 33
-        ndk-version: r28c
-
-    - name: Install Android API 33
-      run: |
-        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-33"
-        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "build-tools;33.0.0"
+    # Notice: the setup-android step is completely removed! 
+    # Buildozer is fully capable of downloading the exact SDK it needs automatically.
 
     - name: Build with Buildozer
       run: |
         export PATH=$PATH:~/.local/bin
-        export ANDROID_SDK_ROOT=$ANDROID_HOME
-        export ANDROID_API=33
+        # Do not override ANDROID_SDK_ROOT so Buildozer uses its internal one!
         buildozer android debug
 
     - name: Upload APK artifact
