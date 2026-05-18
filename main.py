@@ -108,10 +108,21 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             Date TEXT UNIQUE NOT NULL, Weight REAL,
             Meal1 INTEGER, Meal2 INTEGER, Meal3 INTEGER,
-            Meal4 INTEGER, Meal5 INTEGER, TotalCalories INTEGER)''')
+            Meal4 INTEGER, Meal5 INTEGER, Meal6 INTEGER, TotalCalories INTEGER)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS temp_inputs (
             date TEXT PRIMARY KEY, weight TEXT, meal1 TEXT, meal2 TEXT,
-            meal3 TEXT, meal4 TEXT, meal5 TEXT)''')
+            meal3 TEXT, meal4 TEXT, meal5 TEXT, meal6 TEXT)''')
+        # Safe migration for Meal6
+        try:
+            cursor.execute("ALTER TABLE calorie_data ADD COLUMN Meal6 INTEGER")
+        except sqlite3.OperationalError:
+            pass # Column already exists
+            
+        try:
+            cursor.execute("ALTER TABLE temp_inputs ADD COLUMN meal6 TEXT")
+        except sqlite3.OperationalError:
+            pass # Column already exists
+            
         conn.commit()
         conn.close()
         Logger.info(f"Database initialized/verified successfully at {DB_FILE}")
@@ -230,7 +241,7 @@ class CalorieTracker(BoxLayout):
             cursor = conn.cursor()
             
             # Select specific columns to ensure order and content
-            cursor.execute("SELECT Date, Weight, Meal1, Meal2, Meal3, Meal4, Meal5, TotalCalories FROM calorie_data ORDER BY Date ASC")
+            cursor.execute("SELECT Date, Weight, Meal1, Meal2, Meal3, Meal4, Meal5, Meal6, TotalCalories FROM calorie_data ORDER BY Date ASC")
             rows = cursor.fetchall()
             conn.close()
 
@@ -247,13 +258,14 @@ class CalorieTracker(BoxLayout):
                     meal3 = int(row['Meal3']) if row['Meal3'] is not None else 0
                     meal4 = int(row['Meal4']) if row['Meal4'] is not None else 0
                     meal5 = int(row['Meal5']) if row['Meal5'] is not None else 0
+                    meal6 = int(row['Meal6']) if row['Meal6'] is not None else 0
                     total_calories = int(row['TotalCalories']) if row['TotalCalories'] is not None else 0
                     
                     temp_data_list.append({
                         'Date': date_obj,
                         'Weight': weight,
                         'Meal1': meal1, 'Meal2': meal2, 'Meal3': meal3,
-                        'Meal4': meal4, 'Meal5': meal5,
+                        'Meal4': meal4, 'Meal5': meal5, 'Meal6': meal6,
                         'TotalCalories': total_calories
                     })
                 except (ValueError, TypeError) as conversion_error:
@@ -348,7 +360,7 @@ class CalorieTracker(BoxLayout):
         try:
             self.ids.date_input.unbind(text=self.on_date_change)
             self.ids.weight_input.unbind(text=self.save_temp_data_on_change)
-            for i in range(1, 6):
+            for i in range(1, 7):
                 meal_id = f'meal{i}_input'
                 if meal_id in self.ids:
                     self.ids[meal_id].unbind(text=self.save_temp_data_on_change)
@@ -356,7 +368,7 @@ class CalorieTracker(BoxLayout):
 
             self.ids.date_input.bind(text=self.on_date_change)
             self.ids.weight_input.bind(text=self.save_temp_data_on_change)
-            for i in range(1, 6):
+            for i in range(1, 7):
                 meal_id = f'meal{i}_input'
                 if meal_id in self.ids:
                     self.ids[meal_id].bind(text=self.save_temp_data_on_change)
@@ -390,11 +402,11 @@ class CalorieTracker(BoxLayout):
         try:
             conn = sqlite3.connect(DB_FILE)
             cursor = conn.cursor()
-            cursor.execute("SELECT weight, meal1, meal2, meal3, meal4, meal5 FROM temp_inputs WHERE date = ?", (date_str,))
+            cursor.execute("SELECT weight, meal1, meal2, meal3, meal4, meal5, meal6 FROM temp_inputs WHERE date = ?", (date_str,))
             row = cursor.fetchone()
             conn.close()
             bindings = {}
-            fields_to_set = {'weight_input': 0, 'meal1_input': 1, 'meal2_input': 2, 'meal3_input': 3, 'meal4_input': 4, 'meal5_input': 5}
+            fields_to_set = {'weight_input': 0, 'meal1_input': 1, 'meal2_input': 2, 'meal3_input': 3, 'meal4_input': 4, 'meal5_input': 5, 'meal6_input': 6}
             for widget_id, idx in fields_to_set.items():
                 if widget_id in self.ids:
                     widget = self.ids[widget_id]
@@ -432,10 +444,10 @@ class CalorieTracker(BoxLayout):
                 return
             conn = sqlite3.connect(DB_FILE)
             cursor = conn.cursor()
-            cursor.execute('''INSERT OR REPLACE INTO temp_inputs VALUES (?, ?, ?, ?, ?, ?, ?)''',
+            cursor.execute('''INSERT OR REPLACE INTO temp_inputs VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
                            (current_date, self.ids.weight_input.text, self.ids.meal1_input.text,
                             self.ids.meal2_input.text, self.ids.meal3_input.text,
-                            self.ids.meal4_input.text, self.ids.meal5_input.text))
+                            self.ids.meal4_input.text, self.ids.meal5_input.text, self.ids.meal6_input.text))
             conn.commit()
             conn.close()
         except Exception as e:
@@ -463,35 +475,35 @@ class CalorieTracker(BoxLayout):
 
     def update_total_calories(self, *args):
         """Calculate and update total calories display.
-        Shows a numeric total only if all 5 meals are filled with valid numbers.
+        Shows a numeric total only if all 6 meals are filled with valid numbers.
         """
         if not hasattr(self, 'ids') or not self.ids or 'total_calories_label' not in self.ids:
             return
 
         total_cal = 0
-        all_five_meals_filled_numerically = True # Assume true initially
+        all_six_meals_filled_numerically = True # Assume true initially
         
-        for i in range(1, 6): # Check Meal 1 to Meal 5
+        for i in range(1, 7): # Check Meal 1 to Meal 5
             meal_input_id = f'meal{i}_input'
             meal_input = self.ids.get(meal_input_id)
 
             if not meal_input: # Should not happen
-                all_five_meals_filled_numerically = False
+                all_six_meals_filled_numerically = False
                 break 
 
             text_val = meal_input.text.strip()
             if not text_val: # If empty
-                all_five_meals_filled_numerically = False
+                all_six_meals_filled_numerically = False
                 break 
             
             if text_val.isdigit():
                 total_cal += int(text_val)
             else: # Not empty, but not a digit
-                all_five_meals_filled_numerically = False
+                all_six_meals_filled_numerically = False
                 break 
         
         try:
-            if all_five_meals_filled_numerically:
+            if all_six_meals_filled_numerically:
                 self.ids.total_calories_label.text = str(total_cal)
                 self.ids.total_calories_label.color = (0.1,0.4,0.75,1) # Normal color
             else:
@@ -499,7 +511,7 @@ class CalorieTracker(BoxLayout):
                 # but the label will indicate incompleteness.
                 partial_sum = 0
                 has_invalid_entry = False
-                for i_partial in range(1, 6):
+                for i_partial in range(1, 7):
                     meal_input_partial = self.ids.get(f'meal{i_partial}_input')
                     if meal_input_partial:
                         text_val_partial = meal_input_partial.text.strip()
@@ -540,11 +552,11 @@ class CalorieTracker(BoxLayout):
             self.ids.status_label.color = (1, 0.1, 0.1, 1)
             return
 
-        # --- Meal Input Validation (ALL FIVE MEALS ARE NOW MANDATORY) ---
+        # --- Meal Input Validation (ALL SIX MEALS ARE NOW MANDATORY) ---
         parsed_meals_values = [] # To store integer values for DB
         current_total_calories = 0
 
-        for i in range(1, 6): # Iterate through Meal 1 to Meal 5
+        for i in range(1, 7): # Iterate through Meal 1 to Meal 5
             meal_id_str = f'meal{i}_input'
             meal_widget = self.ids.get(meal_id_str)
 
@@ -557,7 +569,7 @@ class CalorieTracker(BoxLayout):
             val_str = meal_widget.text.strip()
             
             if not val_str: # Check if the meal input is empty
-                self.ids.status_label.text = f"Meal {i} is required. All 5 meals must be filled."
+                self.ids.status_label.text = f"Meal {i} is required. All 6 meals must be filled."
                 self.ids.status_label.color = (1, 0.1, 0.1, 1)
                 return # Stop if any meal is empty
             
@@ -570,13 +582,13 @@ class CalorieTracker(BoxLayout):
                 self.ids.status_label.color = (1, 0.1, 0.1, 1)
                 return # Stop if any meal is not a valid number
         
-        # At this point, all 5 meals are filled and are valid numbers.
+        # At this point, all 6 meals are filled and are valid numbers.
 
         try:
             conn = sqlite3.connect(DB_FILE)
             cursor = conn.cursor()
             cursor.execute('''INSERT OR REPLACE INTO calorie_data
-                            (Date, Weight, Meal1, Meal2, Meal3, Meal4, Meal5, TotalCalories)
+                            (Date, Weight, Meal1, Meal2, Meal3, Meal4, Meal5, Meal6, TotalCalories)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
                            (formatted_date_str, weight, *parsed_meals_values, current_total_calories))
             conn.commit()
@@ -588,7 +600,7 @@ class CalorieTracker(BoxLayout):
 
             # Clear input fields
             self.ids.weight_input.text = ''
-            for i_clear in range(1, 6):
+            for i_clear in range(1, 7):
                  meal_id_to_clear = f'meal{i_clear}_input'
                  if meal_id_to_clear in self.ids:
                     self.ids[meal_id_to_clear].text = ''
@@ -623,7 +635,7 @@ class CalorieTracker(BoxLayout):
         if not (hasattr(self, 'ids') and self.ids and 'date_input' in self.ids):
             Logger.warning("clear_inputs: IDs not ready."); return
         current_date = self.ids.date_input.text.strip()
-        bindings = {}; fields_to_clear = ['weight_input'] + [f'meal{i}_input' for i in range(1, 6)]
+        bindings = {}; fields_to_clear = ['weight_input'] + [f'meal{i}_input' for i in range(1, 7)]
         for widget_id in fields_to_clear:
              if widget_id in self.ids:
                  widget = self.ids[widget_id]; bindings[widget_id] = []
@@ -973,6 +985,12 @@ class CalorieTrackerApp(App):
                     id: meal5_input
                     input_filter: 'int'
                     hint_text: 'e.g., 150'
+                InputLabel:
+                    text: 'Meal 6 (Opt):'
+                ValueInput:
+                    id: meal6_input
+                    input_filter: 'int'
+                    hint_text: 'e.g., 100'
             BoxLayout: # Total Calories Display
                 orientation: 'horizontal'
                 size_hint_y: None
@@ -1094,8 +1112,8 @@ class CalorieTrackerApp(App):
                             tracker_instance.check_storage_and_load()
                             # Trigger voice recognition after successful load
                             if platform == 'android':
-                                Logger.info("trigger_tracker_load: Scheduling voice recognition for Android.")
-                                Clock.schedule_once(self.start_voice_recognition, 0.5)
+                                Logger.info("trigger_tracker_load: Scheduling startup prompt.")
+                                Clock.schedule_once(self.show_startup_prompt, 0.5)
                         else:
                             Logger.warning(f"trigger_tracker_load: tracker_instance IDs NOT YET available. Rescheduling (delay: {dt + 0.2:.2f}s).")
                             Clock.schedule_once(self.trigger_tracker_load, dt + 0.2)
@@ -1106,65 +1124,45 @@ class CalorieTrackerApp(App):
         except Exception as e:
              Logger.exception(f"Error triggering tracker load: {e}")
 
-    def start_voice_recognition(self, dt=0):
-        if platform == 'android':
-            try:
-                from jnius import autoclass, cast
-                from android import activity
-                
-                # Bind the result callback
-                activity.bind(on_activity_result=self.on_activity_result)
-                
-                PythonActivity = autoclass('org.kivy.android.PythonActivity')
-                Intent = autoclass('android.content.Intent')
-                RecognizerIntent = autoclass('android.speech.RecognizerIntent')
-                
-                intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-                intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "Say the meal calories...")
-                
-                currentActivity = cast('android.app.Activity', PythonActivity.mActivity)
-                self.REQUEST_CODE_SPEECH = 1000
-                currentActivity.startActivityForResult(intent, self.REQUEST_CODE_SPEECH)
-                Logger.info("Voice recognition intent started.")
-            except Exception as e:
-                Logger.error(f"Failed to start voice recognition: {e}")
-        else:
-            Logger.info("Voice recognition simulated (Not Android).")
+    def show_startup_prompt(self, dt=0):
+        from kivy.uix.popup import Popup
+        from kivy.uix.boxlayout import BoxLayout
+        from kivy.uix.label import Label
+        from kivy.uix.textinput import TextInput
+        from kivy.uix.button import Button
 
-    def on_activity_result(self, request_code, result_code, intent):
-        if request_code == getattr(self, 'REQUEST_CODE_SPEECH', 1000):
-            try:
-                from jnius import autoclass
-                Activity = autoclass('android.app.Activity')
-                if result_code == Activity.RESULT_OK and intent is not None:
-                    RecognizerIntent = autoclass('android.speech.RecognizerIntent')
-                    results = intent.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-                    if results and results.size() > 0:
-                        spoken_text = results.get(0)
-                        Logger.info(f"Voice recognition result: {spoken_text}")
-                        self.process_voice_result(spoken_text)
-            except Exception as e:
-                Logger.error(f"Error handling voice result: {e}")
-            
-            # Unbind after receiving result
-            try:
-                from android import activity
-                activity.unbind(on_activity_result=self.on_activity_result)
-            except:
-                pass
+        content = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(10))
+        content.add_widget(Label(text='What were the calories for your next meal?', size_hint_y=None, height=dp(30)))
+        
+        self.popup_input = TextInput(input_filter='int', multiline=False, size_hint_y=None, height=dp(40), hint_text='e.g. 500')
+        content.add_widget(self.popup_input)
+        
+        btn_layout = BoxLayout(orientation='horizontal', spacing=dp(10), size_hint_y=None, height=dp(40))
+        submit_btn = Button(text='Save', background_color=(0.25,0.65,0.35,1))
+        cancel_btn = Button(text='Cancel', background_color=(0.85,0.35,0.3,1))
+        
+        btn_layout.add_widget(submit_btn)
+        btn_layout.add_widget(cancel_btn)
+        content.add_widget(btn_layout)
 
-    def process_voice_result(self, text):
-        match = re.search(r'\d+', text)
-        if match:
-            calories = match.group()
-            Logger.info(f"Extracted calories: {calories}")
+        self.startup_popup = Popup(title='Next Meal Entry', content=content, size_hint=(0.8, 0.4), auto_dismiss=False)
+        
+        submit_btn.bind(on_press=self.process_popup_result)
+        cancel_btn.bind(on_press=self.startup_popup.dismiss)
+        
+        self.startup_popup.open()
+        
+    def process_popup_result(self, instance):
+        text = self.popup_input.text.strip()
+        self.startup_popup.dismiss()
+        if text and text.isdigit():
+            calories = text
             if self.root and hasattr(self.root, 'get_screen'):
                 tracker_screen = self.root.get_screen('calorie_tracker')
                 if tracker_screen and tracker_screen.tracker_instance:
                     tracker = tracker_screen.tracker_instance
                     if hasattr(tracker, 'ids') and tracker.ids:
-                        for i in range(1, 6):
+                        for i in range(1, 7):
                             meal_id = f'meal{i}_input'
                             if meal_id in tracker.ids:
                                 widget = tracker.ids[meal_id]
@@ -1173,23 +1171,13 @@ class CalorieTrackerApp(App):
                                     tracker.save_temp_data_on_change(widget, calories)
                                     tracker.update_total_calories()
                                     if 'status_label' in tracker.ids:
-                                        tracker.ids.status_label.text = f"Voice input: {calories} added to Meal {i}"
+                                        tracker.ids.status_label.text = f"Popup input: {calories} added to Meal {i}"
                                         tracker.ids.status_label.color = (0.1, 0.7, 0.2, 1)
-                                    Logger.info(f"Filled {meal_id} with {calories}")
                                     return
                         
                         if 'status_label' in tracker.ids:
-                            tracker.ids.status_label.text = "Voice input: All meal slots are full."
+                            tracker.ids.status_label.text = "Popup input: All meal slots are full."
                             tracker.ids.status_label.color = (0.8, 0.5, 0.1, 1)
-        else:
-            Logger.info(f"No calories found in voice input: {text}")
-            if self.root and hasattr(self.root, 'get_screen'):
-                tracker_screen = self.root.get_screen('calorie_tracker')
-                if tracker_screen and tracker_screen.tracker_instance:
-                    tracker = tracker_screen.tracker_instance
-                    if hasattr(tracker, 'ids') and tracker.ids and 'status_label' in tracker.ids:
-                        tracker.ids.status_label.text = "Voice input: Could not understand number."
-                        tracker.ids.status_label.color = (0.8, 0.5, 0.1, 1)
 
 if __name__ == '__main__':
     Logger.info("Application Start")
