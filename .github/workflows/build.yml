@@ -45,6 +45,10 @@ jobs:
         api-level: 33
         ndk-version: r28c
 
+    - name: Install Android API 33
+      run: |
+        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-33"
+
     - name: Build with Buildozer
       run: |
         export PATH=$PATH:~/.local/bin
