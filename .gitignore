@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Kivy / Buildozer
+.buildozer/
+bin/
+calorietracker.spec
+
+# App Data & Database
+calorie_data.db
+app_data/
+temp_inputs.json
+[path to your database]
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
