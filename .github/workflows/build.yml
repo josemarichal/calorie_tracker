@@ -47,11 +47,14 @@ jobs:
 
     - name: Install Android API 33
       run: |
-        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-33"
+        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-33"
+        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "build-tools;33.0.0"
 
     - name: Build with Buildozer
       run: |
         export PATH=$PATH:~/.local/bin
+        export ANDROID_SDK_ROOT=$ANDROID_HOME
+        export ANDROID_API=33
         buildozer android debug
 
     - name: Upload APK artifact
