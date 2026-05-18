@@ -1,0 +1,42 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # Caching helps speed up subsequent builds by saving the heavy Android SDK/NDK
+    - name: Cache Buildozer global directory
+      uses: actions/cache@v4
+      with:
+        path: .buildozer_global
+        key: buildozer-global-${{ hashFiles('buildozer.spec') }}
+        restore-keys: |
+          buildozer-global-
+
+    - name: Cache Buildozer directory
+      uses: actions/cache@v4
+      with:
+        path: .buildozer
+        key: ${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+
+    - name: Build with Buildozer
+      uses: ArtemSBulgakov/buildozer-action@v1
+      id: buildozer
+      with:
+        command: buildozer android debug
+        buildozer_version: master
+
+    - name: Upload APK artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: calorie-tracker-apk
+        path: ${{ steps.buildozer.outputs.filename }}
