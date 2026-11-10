@@ -14,7 +14,7 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Setup Java 17
-      uses: actions/setup-java@v4
+      uses: actions/setup-java@v5
       with:
         distribution: 'temurin'
         java-version: '17'
@@ -23,17 +23,17 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/.buildozer
-        key: buildozer-global-v3-${{ hashFiles('buildozer.spec') }}
+        key: buildozer-global-v4-${{ hashFiles('buildozer.spec') }}
         restore-keys: |
-          buildozer-global-v3-
+          buildozer-global-v4-
 
     - name: Cache project .buildozer directory
       uses: actions/cache@v4
       with:
         path: .buildozer
-        key: ${{ runner.os }}-v3-${{ hashFiles('buildozer.spec') }}
+        key: ${{ runner.os }}-v4-${{ hashFiles('buildozer.spec') }}
 
-    - name: Install system and Python dependencies
+    - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
@@ -41,32 +41,27 @@ jobs:
           autoconf automake libtool libltdl-dev pkg-config zlib1g-dev \
           libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev \
           ccache patch lld gettext
-        pip3 install --user --upgrade "cython<3.0" virtualenv buildozer
-
-    - name: Bootstrap Java 17 compatible Android SDK Command-Line Tools for Buildozer
-      run: |
-        SDK_DIR="$HOME/.buildozer/android/platform/android-sdk"
-        mkdir -p "$SDK_DIR"
-        # Buildozer 1.5.0 downloads legacy Java-8 commandlinetools (6514223) if tools/bin/sdkmanager is missing,
-        # which crashes under Java 17 with NoClassDefFoundError: javax/xml/bind/annotation/XmlSchema.
-        # Pre-populate tools/ with Java-17 compatible commandlinetools so Buildozer uses it seamlessly.
-        if [ ! -f "$SDK_DIR/tools/.java17_ready" ]; then
-          rm -rf "$SDK_DIR/tools" "$SDK_DIR/cmdline-tools"
-          curl -sSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o /tmp/cmdtools.zip
-          unzip -q /tmp/cmdtools.zip -d /tmp/cmdtools_extracted
-          mv /tmp/cmdtools_extracted/cmdline-tools "$SDK_DIR/tools"
-          mkdir -p "$SDK_DIR/cmdline-tools"
-          cp -r "$SDK_DIR/tools" "$SDK_DIR/cmdline-tools/latest"
-          touch "$SDK_DIR/tools/.java17_ready"
-          rm -rf /tmp/cmdtools.zip /tmp/cmdtools_extracted
-        fi
-        yes | "$SDK_DIR/tools/bin/sdkmanager" --sdk_root="$SDK_DIR" --licenses || true
-        "$SDK_DIR/tools/bin/sdkmanager" --sdk_root="$SDK_DIR" "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+        pip3 install --user --upgrade buildozer cython virtualenv "setuptools==69.5.1" "wheel==0.44.0"
 
     - name: Build with Buildozer
       run: |
+        set -o pipefail
         export PATH="$HOME/.local/bin:$PATH"
-        yes | buildozer android debug
+        cat << 'EOF' > /tmp/pip_constraints.txt
+        setuptools==69.5.1
+        wheel==0.44.0
+        EOF
+        export PIP_CONSTRAINT=/tmp/pip_constraints.txt
+        buildozer android debug 2>&1 | tee buildozer_output.log
+
+    - name: Show Build Error Tail on Failure
+      if: failure()
+      run: |
+        echo "### Last 100 lines of Buildozer Log" >> $GITHUB_STEP_SUMMARY
+        echo '```text' >> $GITHUB_STEP_SUMMARY
+        tail -n 100 buildozer_output.log >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        tail -n 100 buildozer_output.log
 
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4

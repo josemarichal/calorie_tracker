@@ -34,32 +34,31 @@ android.permissions = WRITE_EXTERNAL_STORAGE, READ_EXTERNAL_STORAGE
 # (bool) Indicate if the application should be fullscreen or not
 fullscreen = 0
 
-# (str) Application icon (must be PNG for Android aapt2)
+# (str) Application icon
 icon.filename = %(source.dir)s/scale.png
 
 # (int) Target Android API, should be as high as possible.
 android.api = 33
 
-# (int) Minimum API your APK / AAB will support.
+# (int) Minimum API your APK / AAB will support
 android.minapi = 21
 
-# (str) Android NDK version to use
-android.ndk = 25b
+# (str) Android NDK version to use (let Buildozer use python-for-android's recommended NDK automatically)
+#android.ndk = 28c
 
 # (bool) If True, then automatically accept SDK license
-# agreements. This is intended for automation only.
 android.accept_sdk_license = True
 
 # (str) Android entry point, default is ok for Kivy-based app
 android.entrypoint = org.kivy.android.PythonActivity
 
-# (list) The Android archs to build for, choices: armeabi-v7a, arm64-v8a, x86, x86_64
-android.archs = arm64-v8a, armeabi-v7a
+# (list) Build for 64-bit ARM (modern Android phones; avoids 32-bit armeabi-v7a failure on Python 3.14)
+android.archs = arm64-v8a
 
 [buildozer]
 
 # (int) Log level (0 = error only, 1 = info, 2 = debug (with command output))
-log_level = 2
+log_level = 1
 
 # (int) Display warning if buildozer is run as root (0 = False, 1 = True)
 warn_on_root = 1
