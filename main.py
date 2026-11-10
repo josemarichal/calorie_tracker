@@ -1,27 +1,40 @@
 import os
 import sys
-import re
 import sqlite3
+from datetime import date, timedelta, datetime
+
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
-# from kivy.uix.button import Button # Not directly used in this snippet, but keep if used elsewhere
+from kivy.uix.button import Button
 from kivy.uix.label import Label
-# from kivy.uix.scrollview import ScrollView # Not directly used in this snippet
 from kivy.lang import Builder
 from kivy.clock import Clock
-from datetime import date, timedelta, datetime # Keep 'date' for date objects
-# import pandas as pd # REMOVED PANDAS
 from kivy.utils import platform
 from kivy.logger import Logger
 from kivy.metrics import dp
-from kivy.uix.screenmanager import ScreenManager, Screen
-# from kivy.uix.gridlayout import GridLayout # Not directly used in this snippet
-# from kivy.uix.textinput import TextInput # Not directly used in this snippet
-from kivy.properties import ObjectProperty
+from kivy.uix.screenmanager import ScreenManager, Screen, SlideTransition
+from kivy.properties import (
+    ObjectProperty,
+    NumericProperty,
+    StringProperty,
+    ListProperty,
+    BooleanProperty,
+)
+from kivy.uix.behaviors import ButtonBehavior
 
 # Flag to track if we can access the required storage
-STORAGE_ACCESS_OK = True # Assume OK initially, set to False on error
-DB_FILE = None # Will be set in App.on_start
+STORAGE_ACCESS_OK = True
+DB_FILE = None
+
+MEAL_NAMES = [
+    "1: Breakfast",
+    "2: Lunch",
+    "3: Dinner",
+    "4: Snack 1",
+    "5: Snack 2",
+    "6: Snack 3",
+]
+
 
 def get_database_path():
     """Gets the appropriate database path for the platform."""
@@ -30,57 +43,44 @@ def get_database_path():
 
     if platform == 'android':
         try:
-            # from android.storage import app_storage_path # Not strictly needed if user_data_dir works
             context = App.get_running_app()
             if context and hasattr(context, 'user_data_dir') and context.user_data_dir:
                 db_dir_to_use = context.user_data_dir
                 Logger.info(f"Using Android Internal Storage (user_data_dir): {db_dir_to_use}")
             else:
-                 # Fallback: this might be less reliable or need more setup on some Kivy versions
-                 from android.storage import app_storage_path
-                 app_path = app_storage_path()
-                 if app_path:
-                    db_dir_to_use = os.path.join(app_path, context.name if context else "app") # Ensure a subdirectory
+                from android.storage import app_storage_path
+                app_path = app_storage_path()
+                if app_path:
+                    db_dir_to_use = os.path.join(app_path, context.name if context else "app")
                     Logger.info(f"Using Android Internal Storage (app_storage_path fallback): {db_dir_to_use}")
-                 else:
+                else:
                     Logger.error("Android: Could not retrieve user_data_dir or app_storage_path.")
                     STORAGE_ACCESS_OK = False
                     return None
-        except ImportError:
-             Logger.error("Android: Could not import android.storage. Ensure pyjnius is installed for app_storage_path if user_data_dir fails.")
-             STORAGE_ACCESS_OK = False
-             return None
         except Exception as e:
             Logger.error(f"Android: Error getting internal data path: {e}")
             STORAGE_ACCESS_OK = False
             return None
-    else: # Desktop or other platforms
+    else:
         try:
-            # On desktop, create a subdirectory in the script's folder for cleaner organization
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            db_dir_to_use = os.path.join(script_dir, "app_data") # Store DB in an 'app_data' subfolder
+            db_dir_to_use = os.path.join(script_dir, "app_data")
             Logger.info(f"Using Desktop path: {db_dir_to_use}")
         except Exception as e:
             Logger.error(f"Desktop: Error determining app data path: {e}")
             STORAGE_ACCESS_OK = False
             return None
 
-
     if db_dir_to_use:
         try:
             if not os.path.exists(db_dir_to_use):
                 os.makedirs(db_dir_to_use)
-                Logger.info(f"Created directory: {db_dir_to_use}")
-        except OSError as e: # Catch specific OS errors like permission denied
-            Logger.error(f"Failed to create directory {db_dir_to_use} (OSError): {e}")
-            STORAGE_ACCESS_OK = False
-            return None
-        except Exception as e: # Catch any other unexpected errors
-            Logger.error(f"Failed to create directory {db_dir_to_use} (Exception): {e}")
+        except Exception as e:
+            Logger.error(f"Failed to create directory {db_dir_to_use}: {e}")
             STORAGE_ACCESS_OK = False
             return None
 
-        if not os.access(db_dir_to_use, os.W_OK | os.X_OK): # Check for write and execute (needed to create files in dir)
+        if not os.access(db_dir_to_use, os.W_OK | os.X_OK):
             Logger.error(f"Directory is not writable/accessible: {db_dir_to_use}")
             STORAGE_ACCESS_OK = False
             return None
@@ -89,12 +89,12 @@ def get_database_path():
         Logger.info(f"Database Path Set To: {db_path}")
         return db_path
     else:
-        Logger.error("Could not determine a valid directory for the database.")
         STORAGE_ACCESS_OK = False
         return None
 
+
 def init_db():
-    """Initialize the SQLite database. Assumes DB_FILE is set."""
+    """Initialize and safely migrate the SQLite database."""
     global DB_FILE, STORAGE_ACCESS_OK
 
     if not STORAGE_ACCESS_OK or not DB_FILE:
@@ -103,1082 +103,1502 @@ def init_db():
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        # Added 'id' for easier referencing if needed later, Date is still unique for data logic
+
         cursor.execute('''CREATE TABLE IF NOT EXISTS calorie_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            Date TEXT UNIQUE NOT NULL, Weight REAL,
-            Meal1 INTEGER, Meal2 INTEGER, Meal3 INTEGER,
-            Meal4 INTEGER, Meal5 INTEGER, Meal6 INTEGER, TotalCalories INTEGER)''')
+            Date TEXT UNIQUE NOT NULL,
+            Weight REAL,
+            Meal1 INTEGER DEFAULT 0,
+            Meal2 INTEGER DEFAULT 0,
+            Meal3 INTEGER DEFAULT 0,
+            Meal4 INTEGER DEFAULT 0,
+            Meal5 INTEGER DEFAULT 0,
+            Meal6 INTEGER DEFAULT 0,
+            TotalCalories INTEGER DEFAULT 0
+        )''')
+
         cursor.execute('''CREATE TABLE IF NOT EXISTS temp_inputs (
-            date TEXT PRIMARY KEY, weight TEXT, meal1 TEXT, meal2 TEXT,
-            meal3 TEXT, meal4 TEXT, meal5 TEXT, meal6 TEXT)''')
-        # Safe migration for Meal6
-        try:
-            cursor.execute("ALTER TABLE calorie_data ADD COLUMN Meal6 INTEGER")
-        except sqlite3.OperationalError:
-            pass # Column already exists
-            
-        try:
-            cursor.execute("ALTER TABLE temp_inputs ADD COLUMN meal6 TEXT")
-        except sqlite3.OperationalError:
-            pass # Column already exists
-            
+            date TEXT PRIMARY KEY,
+            weight TEXT,
+            meal1 TEXT,
+            meal2 TEXT,
+            meal3 TEXT,
+            meal4 TEXT,
+            meal5 TEXT,
+            meal6 TEXT
+        )''')
+
+        cursor.execute('''CREATE TABLE IF NOT EXISTS user_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )''')
+
+        # Safe migration for Meal6 on older tables
+        for tbl, col_def in [("calorie_data", "Meal6 INTEGER DEFAULT 0"), ("temp_inputs", "meal6 TEXT")]:
+            try:
+                cursor.execute(f"ALTER TABLE {tbl} ADD COLUMN {col_def}")
+            except sqlite3.OperationalError:
+                pass
+
+        # Deduplicate any historical duplicate Date rows before enforcing unique index
+        cursor.execute('''
+            DELETE FROM calorie_data
+            WHERE id NOT IN (
+                SELECT MAX(id) FROM calorie_data GROUP BY Date
+            )
+        ''')
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_calorie_data_date ON calorie_data(Date)")
+
+        # Migrate any unsaved temp_inputs into calorie_data so past partial entries aren't lost
+        cursor.execute("SELECT date, weight, meal1, meal2, meal3, meal4, meal5, meal6 FROM temp_inputs")
+        temp_rows = cursor.fetchall()
+        for trow in temp_rows:
+            t_date = (trow[0] or "").strip()
+            if not t_date:
+                continue
+            try:
+                datetime.strptime(t_date, "%Y-%m-%d")
+            except ValueError:
+                continue
+
+            cursor.execute("SELECT id FROM calorie_data WHERE Date = ?", (t_date,))
+            if cursor.fetchone() is None:
+                try:
+                    w_val = float(trow[1]) if trow[1] and trow[1].strip() else None
+                except ValueError:
+                    w_val = None
+                meals = []
+                for m_str in trow[2:8]:
+                    try:
+                        meals.append(int(float(m_str.strip())) if m_str and m_str.strip() else 0)
+                    except ValueError:
+                        meals.append(0)
+                total_c = sum(meals)
+                if w_val is not None or total_c > 0:
+                    cursor.execute(
+                        '''INSERT INTO calorie_data
+                           (Date, Weight, Meal1, Meal2, Meal3, Meal4, Meal5, Meal6, TotalCalories)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                        (t_date, w_val, meals[0], meals[1], meals[2], meals[3], meals[4], meals[5], total_c),
+                    )
+        cursor.execute("DELETE FROM temp_inputs")
+
         conn.commit()
         conn.close()
         Logger.info(f"Database initialized/verified successfully at {DB_FILE}")
         return True
-    except sqlite3.OperationalError as e: # Catch specific DB operational errors
-        Logger.error(f"Database OperationalError (check path/permissions for {DB_FILE}): {e}")
-        STORAGE_ACCESS_OK = False
-        return False
     except Exception as e:
         Logger.exception(f"General database initialization error at {DB_FILE}: {e}")
         STORAGE_ACCESS_OK = False
         return False
 
+
+class MealSlotCard(ButtonBehavior, BoxLayout):
+    slot_index = NumericProperty(1)
+    meal_title = StringProperty("1: Meal 1")
+    calories_val = NumericProperty(0)
+    is_selected = BooleanProperty(False)
+
+
+class HistoryRowCard(ButtonBehavior, BoxLayout):
+    date_str = StringProperty("")
+    display_date = StringProperty("")
+    total_cals_text = StringProperty("")
+    meals_summary_text = StringProperty("")
+    weight_text = StringProperty("")
+
+
 class CalorieTracker(BoxLayout):
+    selected_date_str = StringProperty("")
+    display_date_title = StringProperty("Today")
+    display_date_subtitle = StringProperty("")
+    is_today = BooleanProperty(True)
+
+    active_meal_slot = NumericProperty(1)
+    active_meal_name = StringProperty(MEAL_NAMES[0])
+    numpad_buffer = StringProperty("")
+    numpad_display_text = StringProperty("Tap digits or +Quick Add")
+
+    total_calories = NumericProperty(0)
+    daily_goal = NumericProperty(2000)
+    remaining_text = StringProperty("2,000 kcal left")
+    progress_ratio = NumericProperty(0.0)
+    progress_Color = ListProperty([0.22, 0.78, 0.52, 1])
+
+    current_weight_display = StringProperty("--.- lbs")
+    weight_is_inherited = BooleanProperty(False)
+    status_message = StringProperty("Auto-save active")
+    status_color = ListProperty([0.58, 0.64, 0.72, 1])
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._data_loaded_once = False
-        self.data = [] # CHANGED: Now a list, not a DataFrame
+        self.data = []
+        self.meal_values = [0, 0, 0, 0, 0, 0]
+        self.current_weight = None
+        self.last_known_weight = 185.0
         self.stats_cache = {
             'wc7': "N/A", 'wc14': "N/A", 'wc30': "N/A",
             'ac7': "N/A", 'ac14': "N/A", 'ac30': "N/A"
         }
-        # Data loading is triggered by App after DB setup.
-        # Binding inputs happens after load_data_and_ui completes successfully.
 
     def check_storage_and_load(self):
-        """Called by App class after DB path is set and potentially initialized."""
         global STORAGE_ACCESS_OK
         if not STORAGE_ACCESS_OK:
-            Logger.error("CalorieTracker: Cannot load data, storage access issue.")
-            if hasattr(self, 'ids') and self.ids and 'status_label' in self.ids: # Defensive self.ids check
-                self.ids.status_label.text = "Storage Error - Cannot Load Data"
-                self.ids.status_label.color = (1, 0, 0, 1)
+            self.set_status("Storage Error - Cannot Load Data", is_error=True)
             return
         self.load_data_and_ui()
+
+    def set_status(self, msg, is_error=False, is_success=False):
+        self.status_message = msg
+        if is_error:
+            self.status_color = [0.95, 0.35, 0.35, 1]
+        elif is_success:
+            self.status_color = [0.25, 0.85, 0.55, 1]
+        else:
+            self.status_color = [0.58, 0.64, 0.72, 1]
 
     def load_data_and_ui(self):
         global DB_FILE, STORAGE_ACCESS_OK
         if not STORAGE_ACCESS_OK or not DB_FILE:
-            Logger.error("load_data_and_ui: Aborted due to storage issue or missing DB_FILE.")
-            if hasattr(self, 'ids') and self.ids and 'status_label' in self.ids:
-                self.ids.status_label.text = "Storage Error"
-                self.ids.status_label.color = (1, 0, 0, 1)
+            self.set_status("Storage Error", is_error=True)
             return
 
         try:
+            self.load_settings()
             self.load_data()
             self.calculate_summary_stats()
 
-            current_date_str = datetime.now().strftime("%Y-%m-%d")
-
-            if not hasattr(self, 'ids') or not self.ids:
-                 Logger.error("load_data_and_ui: CRITICAL - self.ids dictionary not available.")
-                 if hasattr(self, 'ids') and self.ids and 'status_label' in self.ids:
-                    self.ids.status_label.text = "UI Init Error!"
-                    self.ids.status_label.color = (1, 0, 0, 1)
-                 return
-
-            if 'date_input' in self.ids:
-                self.ids.date_input.text = current_date_str
-                self.load_temp_data(current_date_str)
-                self.update_total_calories()
-            else:
-                 Logger.warning("load_data_and_ui: 'date_input' ID not found.")
-
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            self.load_day(today_str, auto_select_empty=True)
             self._data_loaded_once = True
-
-            if 'status_label' in self.ids:
-                self.ids.status_label.text = "Ready"
-                self.ids.status_label.color = (0.3, 0.3, 0.3, 1)
-            else:
-                Logger.warning("load_data_and_ui: 'status_label' ID not found.")
-
-            self._bind_inputs()
-            Logger.info("load_data_and_ui: Successfully completed and bound inputs.")
-
+            self.set_status("All changes save automatically")
         except Exception as e:
-            Logger.exception(f"!!! ERROR DURING load_data_and_ui !!!")
-            import traceback
-            tb_str = traceback.format_exc()
-            error_line_snippet = "Unknown location"
-            try:
-                relevant_lines = [line for line in tb_str.strip().split('\n') if 'main.py' in line]
-                if relevant_lines: error_line_snippet = relevant_lines[-1].strip()[:70]
-                elif len(tb_str.strip().split('\n')) >=3: error_line_snippet = tb_str.strip().split('\n')[-3].strip()[:70]
-            except IndexError: pass
-            detailed_error_msg = f"Load Error: {type(e).__name__} near: {error_line_snippet}"
-            if hasattr(self, 'ids') and self.ids and 'status_label' in self.ids:
-                self.ids.status_label.text = detailed_error_msg
-                self.ids.status_label.color = (1, 0, 0, 1)
-            else: Logger.error("load_data_and_ui: 'status_label' not available to display error.")
-            STORAGE_ACCESS_OK = False
+            Logger.exception(f"Error during load_data_and_ui: {e}")
+            self.set_status(f"Load Error: {type(e).__name__}", is_error=True)
 
-    def _initialize_empty_data(self):
-        """Helper to set self.data to an empty list."""
-        Logger.info("Initializing self.data as an empty list.")
-        self.data = []
+    def load_settings(self):
+        if not STORAGE_ACCESS_OK or not DB_FILE:
+            return
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM user_settings WHERE key = 'daily_goal'")
+            row = cursor.fetchone()
+            conn.close()
+            if row and row[0]:
+                self.daily_goal = max(800, min(10000, int(row[0])))
+        except Exception as e:
+            Logger.warning(f"Could not load settings: {e}")
+
+    def save_setting(self, key, value):
+        if not STORAGE_ACCESS_OK or not DB_FILE:
+            return
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute("INSERT OR REPLACE INTO user_settings (key, value) VALUES (?, ?)", (key, str(value)))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            Logger.warning(f"Could not save setting {key}: {e}")
+
+    def adjust_daily_goal(self, delta):
+        new_goal = max(1000, min(6000, self.daily_goal + delta))
+        self.daily_goal = new_goal
+        self.save_setting('daily_goal', new_goal)
+        self.refresh_summary_ui()
 
     def load_data(self):
-        """Load data from SQLite into a list of dictionaries."""
-        if not self._ensure_db_access("Load Data"):
-            self._initialize_empty_data()
+        """Load all historical records from SQLite into self.data sorted by Date ASC."""
+        self.data = []
+        if not STORAGE_ACCESS_OK or not DB_FILE or not os.path.exists(DB_FILE):
             return
 
-        self._initialize_empty_data() # Start with an empty list
-
         try:
-            if not os.path.exists(DB_FILE):
-                Logger.warning(f"Database file {DB_FILE} does not exist. Data remains empty.")
-                if not init_db(): Logger.error("load_data: Failed to initialize DB schema when file was missing.")
-                return
-
             conn = sqlite3.connect(DB_FILE)
-            # Use row_factory to get rows as dictionary-like objects
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            
-            # Select specific columns to ensure order and content
-            cursor.execute("SELECT Date, Weight, Meal1, Meal2, Meal3, Meal4, Meal5, Meal6, TotalCalories FROM calorie_data ORDER BY Date ASC")
+            cursor.execute(
+                "SELECT Date, Weight, Meal1, Meal2, Meal3, Meal4, Meal5, Meal6, TotalCalories "
+                "FROM calorie_data ORDER BY Date ASC"
+            )
             rows = cursor.fetchall()
             conn.close()
 
-            temp_data_list = []
+            temp_list = []
+            latest_w = None
             for row in rows:
                 try:
-                    # Convert date string to datetime.date object
                     date_obj = datetime.strptime(row['Date'], "%Y-%m-%d").date()
-                    
-                    # Ensure numeric fields are numbers, default to 0 or None if problematic
                     weight = float(row['Weight']) if row['Weight'] is not None else None
-                    meal1 = int(row['Meal1']) if row['Meal1'] is not None else 0
-                    meal2 = int(row['Meal2']) if row['Meal2'] is not None else 0
-                    meal3 = int(row['Meal3']) if row['Meal3'] is not None else 0
-                    meal4 = int(row['Meal4']) if row['Meal4'] is not None else 0
-                    meal5 = int(row['Meal5']) if row['Meal5'] is not None else 0
-                    meal6 = int(row['Meal6']) if row['Meal6'] is not None else 0
-                    total_calories = int(row['TotalCalories']) if row['TotalCalories'] is not None else 0
-                    
-                    temp_data_list.append({
+                    if weight is not None and weight > 0:
+                        latest_w = weight
+                    meals = [
+                        int(row[f'Meal{i}']) if row[f'Meal{i}'] is not None else 0
+                        for i in range(1, 7)
+                    ]
+                    total_cals = sum(meals)
+                    temp_list.append({
                         'Date': date_obj,
+                        'DateStr': row['Date'],
                         'Weight': weight,
-                        'Meal1': meal1, 'Meal2': meal2, 'Meal3': meal3,
-                        'Meal4': meal4, 'Meal5': meal5, 'Meal6': meal6,
-                        'TotalCalories': total_calories
+                        'Meal1': meals[0], 'Meal2': meals[1], 'Meal3': meals[2],
+                        'Meal4': meals[3], 'Meal5': meals[4], 'Meal6': meals[5],
+                        'TotalCalories': total_cals,
                     })
-                except (ValueError, TypeError) as conversion_error:
-                    Logger.error(f"Error converting row data: {row} - {conversion_error}. Skipping row.")
-            
-            self.data = temp_data_list # Assign the processed list
-            Logger.info(f"Loaded {len(self.data)} records into list of dicts.")
+                except (ValueError, TypeError) as err:
+                    Logger.error(f"Skipping malformed row {row}: {err}")
 
+            self.data = temp_list
+            if latest_w is not None:
+                self.last_known_weight = latest_w
         except Exception as e:
-            Logger.exception(f"Error loading data into list of dicts from {DB_FILE}: {e}")
-            self._initialize_empty_data() # Fallback
-            if hasattr(self, 'ids') and self.ids and 'status_label' in self.ids:
-                self.ids.status_label.text = "DB Read Error"
-                self.ids.status_label.color = (1,0,0,1)
-            STORAGE_ACCESS_OK = False
+            Logger.exception(f"Error loading data: {e}")
 
-    def calculate_summary_stats(self):
-        """Calculate summary statistics from self.data (list of dicts)."""
-        if not self.data: # Check if self.data list is empty
-            Logger.info("calculate_summary_stats: No data available (self.data is empty).")
-            self.stats_cache = {key: "N/A" for key in self.stats_cache}
-            return
-
-        # Ensure data is sorted by date (it should be from SQL, but good to be sure if ever modified in memory)
-        # self.data.sort(key=lambda x: x['Date']) # Uncomment if in-memory modifications might unsort
-
+    def load_day(self, date_str, auto_select_empty=True):
+        """Load a specific YYYY-MM-DD date into the UI."""
         try:
-            latest_entry_date = self.data[-1]['Date'] # Assumes data is sorted and not empty
-
-            for period_days in [7, 14, 30]:
-                start_period_date = latest_entry_date - timedelta(days=period_days -1)
-                
-                # Filter data for the current period
-                period_entries = [
-                    entry for entry in self.data 
-                    if entry['Date'] >= start_period_date and entry['Date'] <= latest_entry_date
-                ]
-
-                # Calculate Average Calories
-                calories_in_period = [
-                    entry['TotalCalories'] for entry in period_entries 
-                    if entry.get('TotalCalories') is not None # Use .get for safety
-                ]
-                if calories_in_period:
-                    avg_cals = sum(calories_in_period) / len(calories_in_period)
-                    self.stats_cache[f'ac{period_days}'] = f"{avg_cals:.0f}"
-                else:
-                    self.stats_cache[f'ac{period_days}'] = "N/A"
-
-                # Calculate Weight Change
-                weights_in_period = [
-                    entry for entry in period_entries 
-                    if entry.get('Weight') is not None # Use .get for safety
-                ]
-                
-                if len(weights_in_period) >= 1: # Need at least current weight
-                    # Find the latest weight (should be the last one in sorted weights_in_period)
-                    current_w_entry = max(weights_in_period, key=lambda x: x['Date'])
-                    current_w = current_w_entry['Weight']
-
-                    if len(weights_in_period) >= 2:
-                        # Find the earliest weight in the period
-                        start_w_entry = min(weights_in_period, key=lambda x: x['Date'])
-                        start_w = start_w_entry['Weight']
-                        weight_change = current_w - start_w
-                        self.stats_cache[f'wc{period_days}'] = f"{weight_change:+.1f} lbs"
-                    elif len(weights_in_period) == 1 and current_w_entry['Date'] == latest_entry_date :
-                        # Only one weight entry, and it's today's, so change is 0 for this period relative to itself
-                        self.stats_cache[f'wc{period_days}'] = f"{0.0:+.1f} lbs"
-                    else:
-                        self.stats_cache[f'wc{period_days}'] = "N/A" # Not enough data for change
-                else:
-                    self.stats_cache[f'wc{period_days}'] = "N/A" # No weight data in period
-            
-            Logger.info(f"Summary stats calculated: {self.stats_cache}")
-
-        except Exception as e:
-            Logger.exception(f"Error calculating summary stats (non-Pandas): {e}")
-            self.stats_cache = {key: "N/A" for key in self.stats_cache}
-
-
-    # --- Other methods (save_temp_data_on_change, update_total_calories_on_change, _ensure_db_access,
-    # --- load_temp_data, save_temp_data, on_date_change, update_total_calories, save_data,
-    # --- clear_temp_data, clear_inputs) should largely remain the same as they interact with
-    # --- UI elements or direct SQLite for `temp_inputs`, not heavily with `self.data`'s structure
-    # --- for reading, except for `save_data` needing to call `load_data` and `calculate_summary_stats`.
-
-    def _bind_inputs(self):
-        if not hasattr(self, 'ids') or not self.ids or 'date_input' not in self.ids:
-             Logger.warning("_bind_inputs: IDs not available yet or date_input missing.")
-             return
-        try:
-            self.ids.date_input.unbind(text=self.on_date_change)
-            self.ids.weight_input.unbind(text=self.save_temp_data_on_change)
-            for i in range(1, 7):
-                meal_id = f'meal{i}_input'
-                if meal_id in self.ids:
-                    self.ids[meal_id].unbind(text=self.save_temp_data_on_change)
-                    self.ids[meal_id].unbind(text=self.update_total_calories_on_change)
-
-            self.ids.date_input.bind(text=self.on_date_change)
-            self.ids.weight_input.bind(text=self.save_temp_data_on_change)
-            for i in range(1, 7):
-                meal_id = f'meal{i}_input'
-                if meal_id in self.ids:
-                    self.ids[meal_id].bind(text=self.save_temp_data_on_change)
-                    self.ids[meal_id].bind(text=self.update_total_calories_on_change)
-            Logger.info("Input bindings set.")
-        except Exception as e:
-            Logger.exception(f"Error binding inputs: {e}")
-
-    def save_temp_data_on_change(self, instance, value):
-        if self._data_loaded_once and STORAGE_ACCESS_OK:
-            self.save_temp_data()
-
-    def update_total_calories_on_change(self, instance, value):
-        if self._data_loaded_once:
-            self.update_total_calories()
-
-    def _ensure_db_access(self, operation_name="Operation"):
-        if not STORAGE_ACCESS_OK or not DB_FILE:
-            Logger.error(f"{operation_name}: Aborted due to storage/DB file issue.")
-            if hasattr(self, 'ids') and self.ids and 'status_label' in self.ids:
-                 self.ids.status_label.text = "Storage Error!"
-                 self.ids.status_label.color = (1, 0, 0, 1)
-            return False
-        return True
-
-    def load_temp_data(self, date_str):
-        if not self._ensure_db_access("Load Temp Data"): return
-        if not hasattr(self, 'ids') or not self.ids or 'weight_input' not in self.ids:
-            Logger.warning("load_temp_data: IDs not ready, skipping.")
-            return
-        try:
-            conn = sqlite3.connect(DB_FILE)
-            cursor = conn.cursor()
-            cursor.execute("SELECT weight, meal1, meal2, meal3, meal4, meal5, meal6 FROM temp_inputs WHERE date = ?", (date_str,))
-            row = cursor.fetchone()
-            conn.close()
-            bindings = {}
-            fields_to_set = {'weight_input': 0, 'meal1_input': 1, 'meal2_input': 2, 'meal3_input': 3, 'meal4_input': 4, 'meal5_input': 5, 'meal6_input': 6}
-            for widget_id, idx in fields_to_set.items():
-                if widget_id in self.ids:
-                    widget = self.ids[widget_id]
-                    bindings[widget_id] = []
-                    observers = widget.get_property_observers('text')
-                    if observers:
-                        for observer in observers:
-                             func_name = getattr(observer, '__name__', None)
-                             if func_name == 'save_temp_data_on_change':
-                                  bindings[widget_id].append(self.save_temp_data_on_change)
-                                  widget.unbind(text=self.save_temp_data_on_change)
-                             elif func_name == 'update_total_calories_on_change':
-                                 bindings[widget_id].append(self.update_total_calories_on_change)
-                                 widget.unbind(text=self.update_total_calories_on_change)
-                    widget.text = row[idx] if row and row[idx] is not None else ''
-            for widget_id, funcs in bindings.items():
-                 widget = self.ids[widget_id]
-                 for func in funcs: widget.bind(text=func)
-            self.update_total_calories()
-        except Exception as e:
-            Logger.exception(f"Error loading temp data for {date_str}: {e}")
-            STORAGE_ACCESS_OK = False
-
-    def save_temp_data(self, *args):
-        if not self._ensure_db_access("Save Temp Data"): return
-        if not hasattr(self, 'ids') or not self.ids or 'date_input' not in self.ids:
-             Logger.warning("save_temp_data: IDs not ready.")
-             return
-        try:
-            current_date = self.ids.date_input.text.strip()
-            if not current_date: return
-            try: datetime.strptime(current_date, "%Y-%m-%d")
-            except ValueError:
-                Logger.warning(f"save_temp_data: Invalid date format '{current_date}', not saving.")
-                return
-            conn = sqlite3.connect(DB_FILE)
-            cursor = conn.cursor()
-            cursor.execute('''INSERT OR REPLACE INTO temp_inputs VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                           (current_date, self.ids.weight_input.text, self.ids.meal1_input.text,
-                            self.ids.meal2_input.text, self.ids.meal3_input.text,
-                            self.ids.meal4_input.text, self.ids.meal5_input.text, self.ids.meal6_input.text))
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            Logger.exception(f"Error saving temp data: {e}")
-            STORAGE_ACCESS_OK = False
-
-    def on_date_change(self, instance, value):
-        if not self._data_loaded_once: return
-        if not hasattr(self, 'ids') or not self.ids or 'status_label' not in self.ids:
-            Logger.warning("on_date_change: status_label or IDs not ready.")
-            return
-        try:
-            datetime.strptime(value, "%Y-%m-%d")
-            self.ids.status_label.text = "Loading data for new date..."
-            self.ids.status_label.color = (0.3, 0.3, 0.3, 1)
-            self.load_temp_data(value)
+            target_dt = datetime.strptime(date_str, "%Y-%m-%d").date()
         except ValueError:
-            self.ids.status_label.text = "Invalid date format. Use YYYY-MM-DD."
-            self.ids.status_label.color = (1, 0, 0, 1)
-        except Exception as e:
-            Logger.exception(f"Error on_date_change: {e}")
-            self.ids.status_label.text = "Error changing date."
-            self.ids.status_label.color = (1, 0, 0, 1)
-
-
-    def update_total_calories(self, *args):
-        """Calculate and update total calories display.
-        Shows a numeric total only if all 6 meals are filled with valid numbers.
-        """
-        if not hasattr(self, 'ids') or not self.ids or 'total_calories_label' not in self.ids:
             return
 
-        total_cal = 0
-        all_six_meals_filled_numerically = True # Assume true initially
-        
-        for i in range(1, 7): # Check Meal 1 to Meal 5
-            meal_input_id = f'meal{i}_input'
-            meal_input = self.ids.get(meal_input_id)
+        self.selected_date_str = date_str
+        today_dt = datetime.now().date()
+        self.is_today = (target_dt == today_dt)
 
-            if not meal_input: # Should not happen
-                all_six_meals_filled_numerically = False
-                break 
+        if target_dt == today_dt:
+            self.display_date_title = "Today"
+        elif target_dt == today_dt - timedelta(days=1):
+            self.display_date_title = "Yesterday"
+        elif target_dt == today_dt + timedelta(days=1):
+            self.display_date_title = "Tomorrow"
+        else:
+            self.display_date_title = target_dt.strftime("%b %d, %Y")
 
-            text_val = meal_input.text.strip()
-            if not text_val: # If empty
-                all_six_meals_filled_numerically = False
-                break 
-            
-            if text_val.isdigit():
-                total_cal += int(text_val)
-            else: # Not empty, but not a digit
-                all_six_meals_filled_numerically = False
-                break 
-        
+        self.display_date_subtitle = target_dt.strftime("%A, %b %d")
+
+        # Find record for date_str
+        record = None
+        for entry in self.data:
+            if entry['DateStr'] == date_str:
+                record = entry
+                break
+
+        if record:
+            self.meal_values = [record[f'Meal{i}'] for i in range(1, 7)]
+            self.current_weight = record['Weight']
+            self.weight_is_inherited = False
+        else:
+            self.meal_values = [0, 0, 0, 0, 0, 0]
+            self.current_weight = None
+            self.weight_is_inherited = True
+
+        if auto_select_empty:
+            # Automatically highlight the first empty meal slot (1..6), or slot 6 if all filled
+            first_empty = 6
+            for idx, val in enumerate(self.meal_values):
+                if val == 0:
+                    first_empty = idx + 1
+                    break
+            self.select_meal_slot(first_empty, clear_buffer=True)
+        else:
+            self.select_meal_slot(self.active_meal_slot, clear_buffer=False)
+
+        self.refresh_summary_ui()
+
+    def change_day(self, delta_days):
         try:
-            if all_six_meals_filled_numerically:
-                self.ids.total_calories_label.text = str(total_cal)
-                self.ids.total_calories_label.color = (0.1,0.4,0.75,1) # Normal color
+            curr_dt = datetime.strptime(self.selected_date_str, "%Y-%m-%d").date()
+        except ValueError:
+            curr_dt = datetime.now().date()
+        new_dt = curr_dt + timedelta(days=delta_days)
+        self.load_day(new_dt.strftime("%Y-%m-%d"), auto_select_empty=True)
+
+    def jump_to_today(self):
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        self.load_day(today_str, auto_select_empty=True)
+
+    def select_meal_slot(self, slot_idx, clear_buffer=True):
+        slot_idx = max(1, min(6, int(slot_idx)))
+        self.active_meal_slot = slot_idx
+        self.active_meal_name = MEAL_NAMES[slot_idx - 1]
+        if clear_buffer:
+            self.numpad_buffer = ""
+        self.update_numpad_display()
+        self.refresh_meal_cards()
+
+    def update_numpad_display(self):
+        current_slot_val = self.meal_values[self.active_meal_slot - 1]
+        if self.numpad_buffer:
+            self.numpad_display_text = f"{self.numpad_buffer} kcal"
+        elif current_slot_val > 0:
+            self.numpad_display_text = f"Current: {current_slot_val} kcal (type to replace or +Add)"
+        else:
+            self.numpad_display_text = "Tap +Quick Add or type calories"
+
+    def refresh_meal_cards(self):
+        if not hasattr(self, 'ids') or not self.ids:
+            return
+        for i in range(1, 7):
+            card_id = f'meal_card_{i}'
+            if card_id in self.ids:
+                card = self.ids[card_id]
+                card.calories_val = self.meal_values[i - 1]
+                card.is_selected = (self.active_meal_slot == i)
+
+    def refresh_summary_ui(self):
+        self.refresh_meal_cards()
+        total = sum(self.meal_values)
+        self.total_calories = total
+
+        diff = self.daily_goal - total
+        if diff >= 0:
+            self.remaining_text = f"{diff:,} kcal left of {self.daily_goal:,}"
+        else:
+            self.remaining_text = f"{abs(diff):,} kcal over {self.daily_goal:,} goal"
+
+        ratio = float(total) / float(self.daily_goal) if self.daily_goal > 0 else 0.0
+        self.progress_ratio = min(1.0, max(0.0, ratio))
+
+        if ratio <= 0.85:
+            self.progress_Color = [0.22, 0.78, 0.52, 1]  # Emerald green
+        elif ratio <= 1.0:
+            self.progress_Color = [0.95, 0.68, 0.20, 1]  # Warm amber
+        else:
+            self.progress_Color = [0.95, 0.35, 0.35, 1]  # Coral red
+
+        if self.current_weight is not None and self.current_weight > 0:
+            self.current_weight_display = f"{self.current_weight:.1f} lbs"
+            self.weight_is_inherited = False
+        else:
+            self.current_weight_display = f"{self.last_known_weight:.1f} lbs (last)"
+            self.weight_is_inherited = True
+
+        self.update_numpad_display()
+
+    def persist_current_day(self):
+        """Immediately auto-save the current day's meals and weight to SQLite."""
+        if not STORAGE_ACCESS_OK or not DB_FILE or not self.selected_date_str:
+            return
+        try:
+            total_cals = sum(self.meal_values)
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+
+            if total_cals == 0 and self.current_weight is None:
+                # If everything was cleared for this date, remove the empty row
+                cursor.execute("DELETE FROM calorie_data WHERE Date = ?", (self.selected_date_str,))
             else:
-                # Calculate partial sum for display if user wants to see it while filling,
-                # but the label will indicate incompleteness.
-                partial_sum = 0
-                has_invalid_entry = False
-                for i_partial in range(1, 7):
-                    meal_input_partial = self.ids.get(f'meal{i_partial}_input')
-                    if meal_input_partial:
-                        text_val_partial = meal_input_partial.text.strip()
-                        if text_val_partial.isdigit():
-                            partial_sum += int(text_val_partial)
-                        elif text_val_partial: # Filled but not a digit
-                            has_invalid_entry = True
-                
-                if has_invalid_entry:
-                    self.ids.total_calories_label.text = f"{partial_sum} (Invalid)"
-                else:
-                    self.ids.total_calories_label.text = f"{partial_sum} (Incomplete)"
-                self.ids.total_calories_label.color = (0.5, 0.5, 0.5, 1) # Grayed out / placeholder color
-        except Exception as e:
-            Logger.exception(f"Error updating total calories display: {e}")
-            if 'total_calories_label' in self.ids : self.ids.total_calories_label.text = "Err"
-
-    def save_data(self):
-        """Save data to the database, ensuring ALL FIVE meal fields are filled."""
-        if not self._ensure_db_access("Save Data"): return
-        if not (hasattr(self, 'ids') and self.ids and 'status_label' in self.ids):
-            Logger.warning("Save Data: Status label or IDs not found.")
-            return
-
-        date_text = self.ids.date_input.text.strip()
-        weight_text = self.ids.weight_input.text.strip()
-
-        # --- Basic Validation: Date and Weight ---
-        if not date_text or not weight_text:
-            self.ids.status_label.text = "Date and Weight fields are required."
-            self.ids.status_label.color = (1, 0.1, 0.1, 1)
-            return
-        try:
-            formatted_date_str = datetime.strptime(date_text, "%Y-%m-%d").strftime("%Y-%m-%d")
-            weight = float(weight_text)
-        except ValueError:
-            self.ids.status_label.text = "Invalid Date or Weight format."
-            self.ids.status_label.color = (1, 0.1, 0.1, 1)
-            return
-
-        # --- Meal Input Validation (ALL SIX MEALS ARE NOW MANDATORY) ---
-        parsed_meals_values = [] # To store integer values for DB
-        current_total_calories = 0
-
-        for i in range(1, 7): # Iterate through Meal 1 to Meal 5
-            meal_id_str = f'meal{i}_input'
-            meal_widget = self.ids.get(meal_id_str)
-
-            if not meal_widget: # Should not happen if KV is correct
-                Logger.error(f"Save Data: Missing meal widget ID: {meal_id_str}")
-                self.ids.status_label.text = f"Internal Error: UI for Meal {i} missing."
-                self.ids.status_label.color = (1,0.1,0.1,1)
-                return
-
-            val_str = meal_widget.text.strip()
-            
-            if not val_str: # Check if the meal input is empty
-                self.ids.status_label.text = f"Meal {i} is required. All 6 meals must be filled."
-                self.ids.status_label.color = (1, 0.1, 0.1, 1)
-                return # Stop if any meal is empty
-            
-            if val_str.isdigit():
-                val = int(val_str)
-                parsed_meals_values.append(val)
-                current_total_calories += val
-            else: # Non-digit found in a meal input
-                self.ids.status_label.text = f"Meal {i} must be a number."
-                self.ids.status_label.color = (1, 0.1, 0.1, 1)
-                return # Stop if any meal is not a valid number
-        
-        # At this point, all 6 meals are filled and are valid numbers.
-
-        try:
-            conn = sqlite3.connect(DB_FILE)
-            cursor = conn.cursor()
-            cursor.execute('''INSERT OR REPLACE INTO calorie_data
-                            (Date, Weight, Meal1, Meal2, Meal3, Meal4, Meal5, Meal6, TotalCalories)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                           (formatted_date_str, weight, *parsed_meals_values, current_total_calories))
+                # Fixed 9-column, 9-placeholder upsert
+                cursor.execute(
+                    '''INSERT INTO calorie_data
+                       (Date, Weight, Meal1, Meal2, Meal3, Meal4, Meal5, Meal6, TotalCalories)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(Date) DO UPDATE SET
+                           Weight = excluded.Weight,
+                           Meal1 = excluded.Meal1,
+                           Meal2 = excluded.Meal2,
+                           Meal3 = excluded.Meal3,
+                           Meal4 = excluded.Meal4,
+                           Meal5 = excluded.Meal5,
+                           Meal6 = excluded.Meal6,
+                           TotalCalories = excluded.TotalCalories''',
+                    (
+                        self.selected_date_str,
+                        self.current_weight,
+                        self.meal_values[0],
+                        self.meal_values[1],
+                        self.meal_values[2],
+                        self.meal_values[3],
+                        self.meal_values[4],
+                        self.meal_values[5],
+                        total_cals,
+                    ),
+                )
             conn.commit()
             conn.close()
 
             self.load_data()
             self.calculate_summary_stats()
-            self.clear_temp_data(formatted_date_str)
-
-            # Clear input fields
-            self.ids.weight_input.text = ''
-            for i_clear in range(1, 7):
-                 meal_id_to_clear = f'meal{i_clear}_input'
-                 if meal_id_to_clear in self.ids:
-                    self.ids[meal_id_to_clear].text = ''
-            
-            self.update_total_calories() # Update display (will show "Incomplete" or 0 now)
-            
-            self.ids.status_label.text = "Data saved successfully!"
-            self.ids.status_label.color = (0.1, 0.7, 0.2, 1)
-            
-            self.save_temp_data() # Save empty state for the current date
-
+            self.refresh_summary_ui()
         except Exception as e:
-            Logger.exception(f"Error saving data to DB: {e}")
-            self.ids.status_label.text = f"Save error: {str(e)[:30]}"
-            self.ids.status_label.color = (1, 0.1, 0.1, 1)
-            STORAGE_ACCESS_OK = False
+            Logger.exception(f"Error auto-saving day {self.selected_date_str}: {e}")
+            self.set_status(f"Save Error: {type(e).__name__}", is_error=True)
 
-    def clear_temp_data(self, date_str):
-        if not STORAGE_ACCESS_OK or not DB_FILE:
-            Logger.warning(f"clear_temp_data: Skipped for {date_str} due to storage/DB issue")
+    # --- Quick-Add & Built-in Numpad Actions ---
+    def quick_add_calories(self, amount):
+        """One-tap increment on the currently active meal slot."""
+        idx = self.active_meal_slot - 1
+        new_val = max(0, self.meal_values[idx] + int(amount))
+        self.meal_values[idx] = new_val
+        self.numpad_buffer = ""
+        self.persist_current_day()
+        sign = f"+{amount}" if amount > 0 else f"{amount}"
+        self.set_status(
+            f"Saved! {sign} kcal -> Meal {self.active_meal_slot} ({new_val} kcal)",
+            is_success=True,
+        )
+
+    def clear_active_meal(self):
+        idx = self.active_meal_slot - 1
+        self.meal_values[idx] = 0
+        self.numpad_buffer = ""
+        self.persist_current_day()
+        self.set_status(f"Cleared Meal {self.active_meal_slot}")
+
+    def numpad_press(self, key):
+        if key == 'BS':
+            self.numpad_buffer = self.numpad_buffer[:-1]
+        elif key == 'CLR':
+            self.numpad_buffer = ""
+        elif key == '.':
+            if '.' not in self.numpad_buffer:
+                self.numpad_buffer = (self.numpad_buffer or "0") + "."
+        else:
+            if len(self.numpad_buffer) < 5:
+                if self.numpad_buffer == "0":
+                    self.numpad_buffer = str(key)
+                else:
+                    self.numpad_buffer += str(key)
+        self.update_numpad_display()
+
+    def commit_numpad_to_meal(self, add_mode=False):
+        """Log the numpad buffer to the active meal and auto-advance to the next empty meal."""
+        idx = self.active_meal_slot - 1
+        if not self.numpad_buffer:
+            # If buffer is empty and user presses Next/Log, just advance to next meal slot
+            next_slot = (self.active_meal_slot % 6) + 1
+            self.select_meal_slot(next_slot, clear_buffer=True)
+            self.set_status(f"Switched to {MEAL_NAMES[next_slot - 1]}")
+            return
+
+        try:
+            cals = int( round(float(self.numpad_buffer)) )
+        except ValueError:
+            self.set_status("Invalid calorie number", is_error=True)
+            return
+
+        if add_mode:
+            self.meal_values[idx] = max(0, self.meal_values[idx] + cals)
+            action_desc = f"+{cals} kcal added to Meal {self.active_meal_slot}"
+        else:
+            self.meal_values[idx] = max(0, cals)
+            action_desc = f"Meal {self.active_meal_slot} set to {cals} kcal"
+
+        self.numpad_buffer = ""
+        self.persist_current_day()
+
+        # Auto-advance to the next empty meal slot for frictionless sequential logging
+        next_empty = None
+        for offset in range(1, 7):
+            candidate = ((idx + offset) % 6)
+            if self.meal_values[candidate] == 0:
+                next_empty = candidate + 1
+                break
+        if next_empty:
+            self.select_meal_slot(next_empty, clear_buffer=True)
+
+        self.set_status(f"Saved! {action_desc}", is_success=True)
+
+    # --- Frictionless Weight Logging ---
+    def step_weight(self, delta):
+        base_w = self.current_weight if (self.current_weight is not None and self.current_weight > 0) else self.last_known_weight
+        new_w = round(max(50.0, min(600.0, base_w + delta)), 1)
+        self.current_weight = new_w
+        self.last_known_weight = new_w
+        self.persist_current_day()
+        self.set_status(f"Saved weight: {new_w:.1f} lbs", is_success=True)
+
+    def set_weight_from_numpad(self):
+        if not self.numpad_buffer:
+            # Log the displayed last_known_weight for today with 1 tap
+            self.current_weight = round(self.last_known_weight, 1)
+            self.persist_current_day()
+            self.set_status(f"Logged weight: {self.current_weight:.1f} lbs", is_success=True)
             return
         try:
-             if not date_str: return
-             conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-             cursor.execute("DELETE FROM temp_inputs WHERE date = ?", (date_str,))
-             conn.commit(); conn.close()
-             Logger.info(f"Cleared temp data for {date_str}")
-        except Exception as e:
-             Logger.exception(f"Error clearing temp data for {date_str}: {e}")
+            val = round(float(self.numpad_buffer), 1)
+            if 40.0 <= val <= 700.0:
+                self.current_weight = val
+                self.last_known_weight = val
+                self.numpad_buffer = ""
+                self.persist_current_day()
+                self.set_status(f"Saved weight: {val:.1f} lbs", is_success=True)
+            else:
+                self.set_status("Enter a weight between 40 and 700 lbs on keypad first", is_error=True)
+        except ValueError:
+            self.set_status("Invalid weight number", is_error=True)
 
-    def clear_inputs(self):
-        if not (hasattr(self, 'ids') and self.ids and 'date_input' in self.ids):
-            Logger.warning("clear_inputs: IDs not ready."); return
-        current_date = self.ids.date_input.text.strip()
-        bindings = {}; fields_to_clear = ['weight_input'] + [f'meal{i}_input' for i in range(1, 7)]
-        for widget_id in fields_to_clear:
-             if widget_id in self.ids:
-                 widget = self.ids[widget_id]; bindings[widget_id] = []
-                 observers = widget.get_property_observers('text')
-                 if observers:
-                    for observer in observers:
-                        func_name = getattr(observer, '__name__', None)
-                        if func_name == 'save_temp_data_on_change':
-                             bindings[widget_id].append(self.save_temp_data_on_change)
-                             widget.unbind(text=self.save_temp_data_on_change)
-                        elif func_name == 'update_total_calories_on_change':
-                             bindings[widget_id].append(self.update_total_calories_on_change)
-                             widget.unbind(text=self.update_total_calories_on_change)
-                 widget.text = ''
-        for widget_id, funcs in bindings.items():
-             if widget_id in self.ids:
-                 widget = self.ids[widget_id]
-                 for func in funcs: widget.bind(text=func)
-        self.update_total_calories()
-        if current_date: self.clear_temp_data(current_date)
-        self.save_temp_data() # Save the now-empty state
-        if 'status_label' in self.ids:
-            self.ids.status_label.text = 'Input fields cleared.'
-            self.ids.status_label.color = (0.3,0.3,0.3,1)
+    def calculate_summary_stats(self):
+        """Calculate 7, 14, and 30 day summary statistics."""
+        if not self.data:
+            self.stats_cache = {key: "N/A" for key in self.stats_cache}
+            return
+
+        try:
+            latest_entry_date = self.data[-1]['Date']
+
+            for period_days in [7, 14, 30]:
+                start_period_date = latest_entry_date - timedelta(days=period_days - 1)
+                period_entries = [
+                    entry for entry in self.data
+                    if start_period_date <= entry['Date'] <= latest_entry_date
+                ]
+
+                calories_in_period = [
+                    entry['TotalCalories'] for entry in period_entries
+                    if entry.get('TotalCalories') and entry['TotalCalories'] > 0
+                ]
+                if calories_in_period:
+                    avg_cals = sum(calories_in_period) / len(calories_in_period)
+                    self.stats_cache[f'ac{period_days}'] = f"{avg_cals:,.0f}"
+                else:
+                    self.stats_cache[f'ac{period_days}'] = "N/A"
+
+                weights_in_period = [
+                    entry for entry in period_entries
+                    if entry.get('Weight') is not None and entry['Weight'] > 0
+                ]
+                if len(weights_in_period) >= 2:
+                    current_w = max(weights_in_period, key=lambda x: x['Date'])['Weight']
+                    start_w = min(weights_in_period, key=lambda x: x['Date'])['Weight']
+                    weight_change = current_w - start_w
+                    self.stats_cache[f'wc{period_days}'] = f"{weight_change:+.1f} lbs"
+                elif len(weights_in_period) == 1:
+                    self.stats_cache[f'wc{period_days}'] = "0.0 lbs"
+                else:
+                    self.stats_cache[f'wc{period_days}'] = "N/A"
+        except Exception as e:
+            Logger.exception(f"Error calculating summary stats: {e}")
+            self.stats_cache = {key: "N/A" for key in self.stats_cache}
 
 
 class CalorieTrackerScreen(Screen):
     tracker_instance = ObjectProperty(None)
 
+
 class ProgressScreen(Screen):
+    daily_goal_text = StringProperty("2,000 kcal")
+
     def on_enter(self):
         app = App.get_running_app()
         if app and app.root and hasattr(app.root, 'get_screen'):
             try:
                 tracker_screen = app.root.get_screen('calorie_tracker')
                 if tracker_screen and tracker_screen.tracker_instance:
-                    tracker_screen.tracker_instance.calculate_summary_stats()
+                    tracker = tracker_screen.tracker_instance
+                    tracker.calculate_summary_stats()
+                    self.daily_goal_text = f"{tracker.daily_goal:,} kcal"
             except Exception as e:
-                 Logger.error(f"ProgressScreen: Error accessing tracker to recalculate stats: {e}")
+                Logger.error(f"ProgressScreen: Error refreshing stats: {e}")
         self.update_display()
 
-    def update_display(self):
-        stats = {}
+    def adjust_goal(self, delta):
         app = App.get_running_app()
-        try:
-            if app and app.root and hasattr(app.root, 'get_screen'):
-                tracker_screen = app.root.get_screen('calorie_tracker')
-                if tracker_screen and tracker_screen.tracker_instance:
-                     stats = getattr(tracker_screen.tracker_instance, 'stats_cache', {})
-        except Exception as e: Logger.error(f"ProgressScreen: Error retrieving stats cache: {e}")
+        if app and app.root:
+            tracker = app.root.get_screen('calorie_tracker').tracker_instance
+            if tracker:
+                tracker.adjust_daily_goal(delta)
+                self.daily_goal_text = f"{tracker.daily_goal:,} kcal"
 
-        if not (hasattr(self, 'ids') and self.ids):
-            Logger.warning("ProgressScreen.update_display: IDs not available.")
-            self._set_all_stats_to_na_progress() # Try to set N/A even if some IDs are missing
+    def update_display(self):
+        app = App.get_running_app()
+        tracker = None
+        if app and app.root:
+            tracker = app.root.get_screen('calorie_tracker').tracker_instance
+        if not tracker or not hasattr(self, 'ids') or not self.ids:
             return
 
-        if not stats: self._set_all_stats_to_na_progress(); return
-        try:
-            self.ids.ps_weight_change_7.text = stats.get('wc7', "N/A")
-            self.ids.ps_weight_change_14.text = stats.get('wc14', "N/A")
-            self.ids.ps_weight_change_30.text = stats.get('wc30', "N/A")
-            self.ids.ps_avg_calories_7.text = stats.get('ac7', "N/A")
-            self.ids.ps_avg_calories_14.text = stats.get('ac14', "N/A")
-            self.ids.ps_avg_calories_30.text = stats.get('ac30', "N/A")
-            self.apply_stat_coloring(self.ids.ps_weight_change_7)
-            self.apply_stat_coloring(self.ids.ps_weight_change_14)
-            self.apply_stat_coloring(self.ids.ps_weight_change_30)
-        except KeyError as e:
-            Logger.error(f"ProgressScreen: Missing ID in KV during update: {e}.")
-            self._set_all_stats_to_na_progress()
-        except Exception as e_gen:
-            Logger.error(f"ProgressScreen: General error updating display: {e_gen}")
-            self._set_all_stats_to_na_progress()
+        stats = tracker.stats_cache
+        self.ids.ps_weight_change_7.text = stats.get('wc7', "N/A")
+        self.ids.ps_weight_change_14.text = stats.get('wc14', "N/A")
+        self.ids.ps_weight_change_30.text = stats.get('wc30', "N/A")
+        self.ids.ps_avg_calories_7.text = stats.get('ac7', "N/A")
+        self.ids.ps_avg_calories_14.text = stats.get('ac14', "N/A")
+        self.ids.ps_avg_calories_30.text = stats.get('ac30', "N/A")
 
-    def _set_all_stats_to_na_progress(self):
-        default_color = (0.3, 0.3, 0.3, 1)
-        if hasattr(self, 'ids') and self.ids: # Check if ids exist
-            for period in [7, 14, 30]:
-                for stat_type in ['weight_change', 'avg_calories']:
-                    widget_id = f'ps_{stat_type}_{period}'
-                    if widget_id in self.ids: # Check if specific id exists
-                        self.ids[widget_id].text = "N/A"
-                        self.ids[widget_id].color = default_color
-                    else:
-                        Logger.warning(f"ProgressScreen: Missing ID '{widget_id}' in _set_all_stats_to_na_progress.")
-        else:
-             Logger.warning("ProgressScreen: Cannot set N/A, self.ids not found.")
+        self.apply_stat_coloring(self.ids.ps_weight_change_7)
+        self.apply_stat_coloring(self.ids.ps_weight_change_14)
+        self.apply_stat_coloring(self.ids.ps_weight_change_30)
+
+        # Populate recent history list (latest 20 days reversed)
+        history_box = self.ids.get('history_list_box')
+        if history_box is not None:
+            history_box.clear_widgets()
+            recent_entries = list(reversed(tracker.data[-20:]))
+            if not recent_entries:
+                history_box.add_widget(
+                    Label(
+                        text="No logged days yet. Tap any meal on the main screen to start!",
+                        color=(0.6, 0.65, 0.72, 1),
+                        font_size='14sp',
+                        size_hint_y=None,
+                        height=dp(44),
+                    )
+                )
+            else:
+                for entry in recent_entries:
+                    row = HistoryRowCard()
+                    row.date_str = entry['DateStr']
+                    row.display_date = entry['Date'].strftime("%a, %b %d")
+                    row.total_cals_text = f"{entry['TotalCalories']:,} kcal"
+                    meals_non_zero = [
+                        f"M{i}:{entry[f'Meal{i}']}"
+                        for i in range(1, 7)
+                        if entry.get(f'Meal{i}', 0) > 0
+                    ]
+                    row.meals_summary_text = "  ".join(meals_non_zero) if meals_non_zero else "No meals logged"
+                    row.weight_text = f"{entry['Weight']:.1f} lbs" if entry.get('Weight') else "--"
+                    row.bind(on_release=self.on_history_row_tap)
+                    history_box.add_widget(row)
+
+    def on_history_row_tap(self, row_widget):
+        app = App.get_running_app()
+        if app and app.root:
+            tracker = app.root.get_screen('calorie_tracker').tracker_instance
+            if tracker and row_widget.date_str:
+                tracker.load_day(row_widget.date_str, auto_select_empty=True)
+                self.manager.transition = SlideTransition(direction='right')
+                self.manager.current = 'calorie_tracker'
 
     def apply_stat_coloring(self, label_widget):
-        default_color = (0.3,0.3,0.3,1); loss_color=(0.1,0.7,0.2,1); gain_color=(0.8,0.2,0.1,1)
+        default_color = (0.85, 0.88, 0.92, 1)
+        loss_color = (0.25, 0.85, 0.55, 1)
+        gain_color = (0.95, 0.45, 0.40, 1)
         try:
             text_val = label_widget.text
-            if "N/A" in text_val or not text_val.strip() or "lbs" not in text_val:
-                label_widget.color = default_color; return
+            if "N/A" in text_val or "lbs" not in text_val:
+                label_widget.color = default_color
+                return
             numeric_part = text_val.replace("lbs", "").replace("+", "").strip()
             value = float(numeric_part)
-            if value < 0: label_widget.color = loss_color
-            elif value > 0: label_widget.color = gain_color
-            else: label_widget.color = default_color
-        except ValueError: Logger.warning(f"Could not parse value for coloring: {label_widget.text}"); label_widget.color = default_color
-        except Exception as e: Logger.error(f"Error applying stat coloring: {e}"); label_widget.color = default_color
+            if value < 0:
+                label_widget.color = loss_color
+            elif value > 0:
+                label_widget.color = gain_color
+            else:
+                label_widget.color = default_color
+        except Exception:
+            label_widget.color = default_color
 
-    def go_back(self, instance): self.manager.current = 'calorie_tracker'
+    def go_back(self):
+        self.manager.transition = SlideTransition(direction='right')
+        self.manager.current = 'calorie_tracker'
 
-class CalorieTrackerApp(App):
-    def build(self):
-        current_date_hint = datetime.now().strftime("%Y-%m-%d")
-        # KV String remains the same
-        kv_string_content = f"""
 
+KV_STRING = """
 #:import dp kivy.metrics.dp
+#:import SlideTransition kivy.uix.screenmanager.SlideTransition
 
-# --- Custom Widget Styles ---
-<InputLabel@Label>:
-    size_hint_x: 0.45
-    font_size: '15sp'
-    halign: 'left'
-    valign: 'middle'
-    text_size: self.width, None
-    color: 0.2, 0.2, 0.2, 1
-
-<ValueInput@TextInput>:
-    multiline: False
-    size_hint_x: 0.55
-    font_size: '15sp'
-    padding: [dp(8), dp(10)]
-    hint_text_color: 0.6, 0.6, 0.6, 1
-
-<ActionButton@Button>:
-    font_size: '16sp'
-    size_hint_y: None
-    height: dp(48)
-    color: 1, 1, 1, 1
+<QuickChipButton@Button>:
     background_normal: ''
-    background_down: '' # To make background_color effective
-
-<StatHeader@Label>:
+    background_down: ''
+    background_color: 0, 0, 0, 0
+    color: 0.92, 0.96, 1, 1
+    font_size: '14sp'
     bold: True
-    font_size: '13sp'
-    halign: 'center'
-    valign: 'middle'
-    text_size: self.width - dp(4), None
-    padding_x: dp(2)
-    
-<StatValue@Label>:
-    font_size: '13sp'
-    halign: 'center'
-    valign: 'middle'
-    text_size: self.width - dp(4), None
-    padding_x: dp(2)
+    canvas.before:
+        Color:
+            rgba: (0.22, 0.52, 0.88, 1) if self.state == 'down' else (0.17, 0.23, 0.34, 1)
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [dp(10)]
+        Color:
+            rgba: 0.28, 0.38, 0.55, 1
+        Line:
+            rounded_rectangle: (self.x, self.y, self.width, self.height, dp(10))
+            width: 1
 
-# --- Screen Definitions ---
+<NumpadKey@Button>:
+    background_normal: ''
+    background_down: ''
+    background_color: 0, 0, 0, 0
+    color: 0.96, 0.97, 0.99, 1
+    font_size: '20sp'
+    bold: True
+    canvas.before:
+        Color:
+            rgba: (0.25, 0.33, 0.46, 1) if self.state == 'down' else (0.14, 0.18, 0.25, 1)
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [dp(10)]
+
+<WeightStepButton@Button>:
+    background_normal: ''
+    background_down: ''
+    background_color: 0, 0, 0, 0
+    color: 0.88, 0.92, 0.98, 1
+    font_size: '13sp'
+    bold: True
+    size_hint_x: None
+    width: dp(46)
+    canvas.before:
+        Color:
+            rgba: (0.25, 0.35, 0.50, 1) if self.state == 'down' else (0.16, 0.21, 0.30, 1)
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [dp(8)]
+
+<MealSlotCard>:
+    orientation: 'vertical'
+    padding: [dp(8), dp(6)]
+    spacing: dp(2)
+    canvas.before:
+        Color:
+            rgba: (0.16, 0.27, 0.42, 1) if root.is_selected else ((0.12, 0.17, 0.24, 1) if root.calories_val > 0 else (0.10, 0.13, 0.19, 1))
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [dp(12)]
+        Color:
+            rgba: (0.30, 0.72, 1.0, 1) if root.is_selected else ((0.22, 0.55, 0.40, 0.7) if root.calories_val > 0 else (0.18, 0.23, 0.32, 1))
+        Line:
+            rounded_rectangle: (self.x, self.y, self.width, self.height, dp(12))
+            width: dp(1.8) if root.is_selected else dp(1)
+    Label:
+        text: root.meal_title
+        font_size: '11sp'
+        bold: True
+        color: (0.55, 0.82, 1.0, 1) if root.is_selected else (0.58, 0.65, 0.75, 1)
+        size_hint_y: 0.42
+        halign: 'center'
+        valign: 'middle'
+        text_size: self.size
+    Label:
+        text: (str(root.calories_val) + ' kcal') if root.calories_val > 0 else '+ Tap'
+        font_size: '16sp' if root.calories_val > 0 else '13sp'
+        bold: root.calories_val > 0
+        color: (1, 1, 1, 1) if root.calories_val > 0 else ((0.65, 0.82, 1.0, 0.9) if root.is_selected else (0.42, 0.48, 0.58, 1))
+        size_hint_y: 0.58
+        halign: 'center'
+        valign: 'middle'
+        text_size: self.size
+
+<HistoryRowCard>:
+    orientation: 'horizontal'
+    size_hint_y: None
+    height: dp(58)
+    padding: [dp(12), dp(8)]
+    spacing: dp(8)
+    canvas.before:
+        Color:
+            rgba: (0.18, 0.24, 0.34, 1) if self.state == 'down' else (0.12, 0.16, 0.23, 1)
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [dp(10)]
+    BoxLayout:
+        orientation: 'vertical'
+        size_hint_x: 0.56
+        Label:
+            text: root.display_date
+            font_size: '14sp'
+            bold: True
+            color: 0.94, 0.96, 1, 1
+            halign: 'left'
+            valign: 'middle'
+            text_size: self.size
+        Label:
+            text: root.meals_summary_text
+            font_size: '11sp'
+            color: 0.58, 0.65, 0.75, 1
+            halign: 'left'
+            valign: 'middle'
+            text_size: self.size
+            shorten: True
+            shorten_from: 'right'
+    BoxLayout:
+        orientation: 'vertical'
+        size_hint_x: 0.44
+        Label:
+            text: root.total_cals_text
+            font_size: '15sp'
+            bold: True
+            color: 0.30, 0.82, 0.58, 1
+            halign: 'right'
+            valign: 'middle'
+            text_size: self.size
+        Label:
+            text: root.weight_text
+            font_size: '12sp'
+            color: 0.68, 0.75, 0.85, 1
+            halign: 'right'
+            valign: 'middle'
+            text_size: self.size
+
 <CalorieTrackerScreen>:
     tracker_instance: tracker_content_id
     CalorieTracker:
         id: tracker_content_id
 
+<CalorieTracker>:
+    orientation: 'vertical'
+    padding: [dp(12), dp(10), dp(12), dp(8)]
+    spacing: dp(8)
+    canvas.before:
+        Color:
+            rgba: 0.06, 0.08, 0.12, 1
+        Rectangle:
+            pos: self.pos
+            size: self.size
+
+    # --- 1. Top Date Navigation & Stats Header ---
+    BoxLayout:
+        orientation: 'horizontal'
+        size_hint_y: None
+        height: dp(44)
+        spacing: dp(6)
+
+        Button:
+            text: '<'
+            font_size: '20sp'
+            bold: True
+            size_hint_x: None
+            width: dp(44)
+            background_normal: ''
+            background_down: ''
+            background_color: 0, 0, 0, 0
+            color: 0.9, 0.94, 1, 1
+            on_release: root.change_day(-1)
+            canvas.before:
+                Color:
+                    rgba: (0.22, 0.30, 0.42, 1) if self.state == 'down' else (0.13, 0.17, 0.24, 1)
+                RoundedRectangle:
+                    pos: self.pos
+                    size: self.size
+                    radius: [dp(10)]
+
+        Button:
+            background_normal: ''
+            background_down: ''
+            background_color: 0, 0, 0, 0
+            on_release: root.jump_to_today()
+            canvas.before:
+                Color:
+                    rgba: (0.16, 0.22, 0.32, 1) if self.state == 'down' else (0.11, 0.15, 0.22, 1)
+                RoundedRectangle:
+                    pos: self.pos
+                    size: self.size
+                    radius: [dp(10)]
+            BoxLayout:
+                pos: self.parent.pos
+                size: self.parent.size
+                orientation: 'vertical'
+                padding: [dp(6), dp(2)]
+                Label:
+                    text: root.display_date_title + ("" if root.is_today else "  (Tap for Today)")
+                    font_size: '15sp'
+                    bold: True
+                    color: 0.96, 0.98, 1, 1
+                Label:
+                    text: root.display_date_subtitle
+                    font_size: '11sp'
+                    color: 0.58, 0.66, 0.78, 1
+
+        Button:
+            text: '>'
+            font_size: '20sp'
+            bold: True
+            size_hint_x: None
+            width: dp(44)
+            background_normal: ''
+            background_down: ''
+            background_color: 0, 0, 0, 0
+            color: 0.9, 0.94, 1, 1
+            on_release: root.change_day(1)
+            canvas.before:
+                Color:
+                    rgba: (0.22, 0.30, 0.42, 1) if self.state == 'down' else (0.13, 0.17, 0.24, 1)
+                RoundedRectangle:
+                    pos: self.pos
+                    size: self.size
+                    radius: [dp(10)]
+
+        Button:
+            text: 'Trends'
+            font_size: '13sp'
+            bold: True
+            size_hint_x: None
+            width: dp(68)
+            background_normal: ''
+            background_down: ''
+            background_color: 0, 0, 0, 0
+            color: 0.95, 0.98, 1, 1
+            on_release:
+                app.root.transition = SlideTransition(direction='left')
+                app.root.current = 'progress'
+            canvas.before:
+                Color:
+                    rgba: (0.22, 0.48, 0.82, 1) if self.state == 'down' else (0.18, 0.38, 0.68, 1)
+                RoundedRectangle:
+                    pos: self.pos
+                    size: self.size
+                    radius: [dp(10)]
+
+    # --- 2. Hero Calorie Summary & Progress Bar + Frictionless Weight Bar ---
+    BoxLayout:
+        orientation: 'vertical'
+        size_hint_y: None
+        height: dp(104)
+        padding: [dp(12), dp(8)]
+        spacing: dp(6)
+        canvas.before:
+            Color:
+                rgba: 0.11, 0.15, 0.22, 1
+            RoundedRectangle:
+                pos: self.pos
+                size: self.size
+                radius: [dp(14)]
+
+        BoxLayout:
+            orientation: 'horizontal'
+            size_hint_y: None
+            height: dp(32)
+            Label:
+                text: '{:,} kcal'.format(root.total_calories)
+                font_size: '24sp'
+                bold: True
+                color: 0.98, 0.99, 1, 1
+                halign: 'left'
+                valign: 'middle'
+                text_size: self.size
+                size_hint_x: 0.48
+            Label:
+                text: root.remaining_text
+                font_size: '13sp'
+                bold: True
+                color: root.progress_Color
+                halign: 'right'
+                valign: 'middle'
+                text_size: self.size
+                size_hint_x: 0.52
+
+        # Progress Bar Track
+        Widget:
+            size_hint_y: None
+            height: dp(8)
+            canvas:
+                Color:
+                    rgba: 0.06, 0.08, 0.12, 1
+                RoundedRectangle:
+                    pos: self.pos
+                    size: self.size
+                    radius: [dp(4)]
+                Color:
+                    rgba: root.progress_Color
+                RoundedRectangle:
+                    pos: self.pos
+                    size: (max(dp(6), self.width * root.progress_ratio) if root.total_calories > 0 else 0, self.height)
+                    radius: [dp(4)]
+
+        # Frictionless Weight Stepper Row
+        BoxLayout:
+            orientation: 'horizontal'
+            size_hint_y: None
+            height: dp(34)
+            spacing: dp(5)
+            Label:
+                text: "Wt: " + root.current_weight_display
+                font_size: '13sp'
+                bold: True
+                color: (0.68, 0.76, 0.88, 1) if root.weight_is_inherited else (0.35, 0.88, 0.62, 1)
+                halign: 'left'
+                valign: 'middle'
+                text_size: self.size
+            WeightStepButton:
+                text: '-0.5'
+                on_release: root.step_weight(-0.5)
+            WeightStepButton:
+                text: '-0.1'
+                on_release: root.step_weight(-0.1)
+            WeightStepButton:
+                text: '+0.1'
+                on_release: root.step_weight(0.1)
+            WeightStepButton:
+                text: '+0.5'
+                on_release: root.step_weight(0.5)
+            Button:
+                text: 'Set Wt'
+                font_size: '12sp'
+                bold: True
+                size_hint_x: None
+                width: dp(54)
+                background_normal: ''
+                background_down: ''
+                background_color: 0, 0, 0, 0
+                color: 0.9, 0.95, 1, 1
+                on_release: root.set_weight_from_numpad()
+                canvas.before:
+                    Color:
+                        rgba: (0.24, 0.45, 0.72, 1) if self.state == 'down' else (0.18, 0.30, 0.48, 1)
+                    RoundedRectangle:
+                        pos: self.pos
+                        size: self.size
+                        radius: [dp(8)]
+
+    # --- 3. 6 Tappable Meal Slot Cards (3x2 Grid) ---
+    GridLayout:
+        cols: 3
+        rows: 2
+        spacing: dp(7)
+        size_hint_y: None
+        height: dp(116)
+
+        MealSlotCard:
+            id: meal_card_1
+            slot_index: 1
+            meal_title: "1: Breakfast"
+            on_release: root.select_meal_slot(1)
+        MealSlotCard:
+            id: meal_card_2
+            slot_index: 2
+            meal_title: "2: Lunch"
+            on_release: root.select_meal_slot(2)
+        MealSlotCard:
+            id: meal_card_3
+            slot_index: 3
+            meal_title: "3: Dinner"
+            on_release: root.select_meal_slot(3)
+        MealSlotCard:
+            id: meal_card_4
+            slot_index: 4
+            meal_title: "4: Snack 1"
+            on_release: root.select_meal_slot(4)
+        MealSlotCard:
+            id: meal_card_5
+            slot_index: 5
+            meal_title: "5: Snack 2"
+            on_release: root.select_meal_slot(5)
+        MealSlotCard:
+            id: meal_card_6
+            slot_index: 6
+            meal_title: "6: Snack 3"
+            on_release: root.select_meal_slot(6)
+
+    # --- 4. Instant Quick-Add Chips + Thumb Numpad Deck ---
+    BoxLayout:
+        orientation: 'vertical'
+        spacing: dp(6)
+        padding: [dp(10), dp(8)]
+        canvas.before:
+            Color:
+                rgba: 0.09, 0.12, 0.18, 1
+            RoundedRectangle:
+                pos: self.pos
+                size: self.size
+                radius: [dp(14)]
+
+        # Active Slot Indicator + Live Numpad Readout + Clear Slot Button
+        BoxLayout:
+            orientation: 'horizontal'
+            size_hint_y: None
+            height: dp(36)
+            spacing: dp(8)
+
+            BoxLayout:
+                orientation: 'vertical'
+                canvas.before:
+                    Color:
+                        rgba: 0.06, 0.08, 0.12, 1
+                    RoundedRectangle:
+                        pos: self.pos
+                        size: self.size
+                        radius: [dp(8)]
+                padding: [dp(10), dp(2)]
+                Label:
+                    text: 'Logging to ' + root.active_meal_name + ':  ' + root.numpad_display_text
+                    font_size: '13sp'
+                    bold: True
+                    color: (0.40, 0.85, 1.0, 1) if root.numpad_buffer else (0.82, 0.88, 0.96, 1)
+                    halign: 'left'
+                    valign: 'middle'
+                    text_size: self.size
+
+            Button:
+                text: 'Clear Meal'
+                font_size: '12sp'
+                bold: True
+                size_hint_x: None
+                width: dp(78)
+                background_normal: ''
+                background_down: ''
+                background_color: 0, 0, 0, 0
+                color: 0.98, 0.72, 0.72, 1
+                on_release: root.clear_active_meal()
+                canvas.before:
+                    Color:
+                        rgba: (0.55, 0.20, 0.22, 1) if self.state == 'down' else (0.32, 0.14, 0.17, 1)
+                    RoundedRectangle:
+                        pos: self.pos
+                        size: self.size
+                        radius: [dp(8)]
+
+        # One-Tap Quick-Add Row (No typing needed!)
+        BoxLayout:
+            orientation: 'horizontal'
+            size_hint_y: None
+            height: dp(38)
+            spacing: dp(6)
+
+            QuickChipButton:
+                text: '+50'
+                on_release: root.quick_add_calories(50)
+            QuickChipButton:
+                text: '+100'
+                on_release: root.quick_add_calories(100)
+            QuickChipButton:
+                text: '+150'
+                on_release: root.quick_add_calories(150)
+            QuickChipButton:
+                text: '+250'
+                on_release: root.quick_add_calories(250)
+            QuickChipButton:
+                text: '+400'
+                on_release: root.quick_add_calories(400)
+            QuickChipButton:
+                text: '-50'
+                color: 0.98, 0.78, 0.78, 1
+                on_release: root.quick_add_calories(-50)
+
+        # Built-In Thumb Numpad (Zero Android Keyboard Lag!)
+        GridLayout:
+            cols: 4
+            rows: 4
+            spacing: dp(6)
+
+            NumpadKey:
+                text: '1'
+                on_release: root.numpad_press('1')
+            NumpadKey:
+                text: '2'
+                on_release: root.numpad_press('2')
+            NumpadKey:
+                text: '3'
+                on_release: root.numpad_press('3')
+            Button:
+                text: 'Del'
+                font_size: '16sp'
+                bold: True
+                background_normal: ''
+                background_down: ''
+                background_color: 0, 0, 0, 0
+                color: 0.95, 0.80, 0.65, 1
+                on_release: root.numpad_press('BS')
+                canvas.before:
+                    Color:
+                        rgba: (0.35, 0.25, 0.22, 1) if self.state == 'down' else (0.20, 0.16, 0.16, 1)
+                    RoundedRectangle:
+                        pos: self.pos
+                        size: self.size
+                        radius: [dp(10)]
+
+            NumpadKey:
+                text: '4'
+                on_release: root.numpad_press('4')
+            NumpadKey:
+                text: '5'
+                on_release: root.numpad_press('5')
+            NumpadKey:
+                text: '6'
+                on_release: root.numpad_press('6')
+            Button:
+                text: '+ Add'
+                font_size: '15sp'
+                bold: True
+                background_normal: ''
+                background_down: ''
+                background_color: 0, 0, 0, 0
+                color: 0.95, 0.98, 1, 1
+                on_release: root.commit_numpad_to_meal(add_mode=True)
+                canvas.before:
+                    Color:
+                        rgba: (0.22, 0.52, 0.85, 1) if self.state == 'down' else (0.16, 0.38, 0.65, 1)
+                    RoundedRectangle:
+                        pos: self.pos
+                        size: self.size
+                        radius: [dp(10)]
+
+            NumpadKey:
+                text: '7'
+                on_release: root.numpad_press('7')
+            NumpadKey:
+                text: '8'
+                on_release: root.numpad_press('8')
+            NumpadKey:
+                text: '9'
+                on_release: root.numpad_press('9')
+            Button:
+                text: 'Log ->'
+                font_size: '16sp'
+                bold: True
+                background_normal: ''
+                background_down: ''
+                background_color: 0, 0, 0, 0
+                color: 1, 1, 1, 1
+                on_release: root.commit_numpad_to_meal(add_mode=False)
+                canvas.before:
+                    Color:
+                        rgba: (0.22, 0.78, 0.50, 1) if self.state == 'down' else (0.16, 0.62, 0.38, 1)
+                    RoundedRectangle:
+                        pos: self.pos
+                        size: self.size
+                        radius: [dp(10)]
+
+            NumpadKey:
+                text: '.'
+                on_release: root.numpad_press('.')
+            NumpadKey:
+                text: '0'
+                on_release: root.numpad_press('0')
+            NumpadKey:
+                text: '00'
+                on_release: root.numpad_press('00')
+            Button:
+                text: 'Next ->'
+                font_size: '14sp'
+                bold: True
+                background_normal: ''
+                background_down: ''
+                background_color: 0, 0, 0, 0
+                color: 0.85, 0.92, 1, 1
+                on_release: root.select_meal_slot((root.active_meal_slot % 6) + 1)
+                canvas.before:
+                    Color:
+                        rgba: (0.24, 0.32, 0.44, 1) if self.state == 'down' else (0.16, 0.22, 0.32, 1)
+                    RoundedRectangle:
+                        pos: self.pos
+                        size: self.size
+                        radius: [dp(10)]
+
+    # --- 5. Subtle Auto-Save Status Bar ---
+    Label:
+        text: root.status_message
+        font_size: '12sp'
+        color: root.status_color
+        size_hint_y: None
+        height: dp(20)
+        halign: 'center'
+        valign: 'middle'
+        text_size: self.size
+
+
+<StatCellHeader@Label>:
+    bold: True
+    font_size: '13sp'
+    color: 0.62, 0.70, 0.82, 1
+    halign: 'center'
+    valign: 'middle'
+    text_size: self.size
+
+<StatCellValue@Label>:
+    bold: True
+    font_size: '15sp'
+    color: 0.94, 0.96, 1, 1
+    halign: 'center'
+    valign: 'middle'
+    text_size: self.size
+
 <ProgressScreen>:
     BoxLayout:
         orientation: 'vertical'
-        padding: dp(15)
-        spacing: dp(12)
+        padding: dp(14)
+        spacing: dp(10)
         canvas.before:
             Color:
-                rgba: 0.92, 0.92, 0.94, 1
+                rgba: 0.06, 0.08, 0.12, 1
             Rectangle:
                 pos: self.pos
                 size: self.size
-        Label:
-            text: 'Progress Report'
-            font_size: '26sp'
-            bold: True
-            color: 0.15, 0.15, 0.2, 1
+
+        # Top Bar
+        BoxLayout:
+            orientation: 'horizontal'
             size_hint_y: None
-            height: self.texture_size[1] + dp(20)
-        GridLayout:
-            id: progress_stats_grid
-            cols: 4
-            size_hint_y: None
-            height: self.minimum_height
-            row_default_height: dp(40) 
-            row_force_default: True    
-            spacing: dp(5)
-            padding: [0, dp(10), 0, dp(10)]
-
-            StatHeader:
-                text: 'Period'
+            height: dp(44)
+            spacing: dp(10)
+            Button:
+                text: '< Tracker'
+                font_size: '14sp'
+                bold: True
+                size_hint_x: None
+                width: dp(96)
+                background_normal: ''
+                background_down: ''
+                background_color: 0, 0, 0, 0
+                color: 0.95, 0.98, 1, 1
+                on_release: root.go_back()
+                canvas.before:
+                    Color:
+                        rgba: (0.22, 0.48, 0.82, 1) if self.state == 'down' else (0.16, 0.34, 0.60, 1)
+                    RoundedRectangle:
+                        pos: self.pos
+                        size: self.size
+                        radius: [dp(10)]
+            Label:
+                text: 'Trends & History'
+                font_size: '20sp'
+                bold: True
+                color: 0.96, 0.98, 1, 1
                 halign: 'left'
-                size_hint_x: 0.30
-                color: 0.1,0.1,0.1,1
-            StatHeader:
-                text: '7 Days'
-                size_hint_x: 0.23
-                color: 0.1,0.1,0.1,1
-            StatHeader:
-                text: '14 Days'
-                size_hint_x: 0.23
-                color: 0.1,0.1,0.1,1
-            StatHeader:
-                text: '30 Days'
-                size_hint_x: 0.24
-                color: 0.1,0.1,0.1,1
+                valign: 'middle'
+                text_size: self.size
 
-            StatValue:
-                text: 'Wt Change:'
-                halign: 'left'
-                size_hint_x: 0.30
-                color: 0.3,0.3,0.3,1
-            StatValue:
-                id: ps_weight_change_7
-                text: 'N/A'
-                size_hint_x: 0.23
-            StatValue:
-                id: ps_weight_change_14
-                text: 'N/A'
-                size_hint_x: 0.23
-            StatValue:
-                id: ps_weight_change_30
-                text: 'N/A'
-                size_hint_x: 0.24
-
-            StatValue:
-                text: 'Avg Cals:'
-                halign: 'left'
-                size_hint_x: 0.30
-                color: 0.3,0.3,0.3,1
-            StatValue:
-                id: ps_avg_calories_7
-                text: 'N/A'
-                size_hint_x: 0.23
-                color: 0.3,0.3,0.3,1
-            StatValue:
-                id: ps_avg_calories_14
-                text: 'N/A'
-                size_hint_x: 0.23
-                color: 0.3,0.3,0.3,1
-            StatValue:
-                id: ps_avg_calories_30
-                text: 'N/A'
-                size_hint_x: 0.24
-                color: 0.3,0.3,0.3,1
-        BoxLayout: # Spacer
-            size_hint_y: 1 
-        ActionButton:
-            text: 'Back to Tracker'
-            on_press: root.go_back(self)
-            background_color: 0.4,0.4,0.7,1
-            # size_hint_y: None # Already in ActionButton rule
-            # height: dp(48)   # Already in ActionButton rule
-            
-<CalorieTracker>:
-    orientation: 'vertical'
-    ScrollView:
-        bar_width: dp(8)
-        bar_color: 0.3,0.3,0.7,0.9
-        effect_cls: "ScrollEffect" # Ensure this effect is valid or remove if unsure
+        # Summary Averages Card
         BoxLayout:
             orientation: 'vertical'
-            padding: dp(15)
-            spacing: dp(12)
             size_hint_y: None
-            height: self.minimum_height
+            height: dp(126)
+            padding: [dp(12), dp(8)]
             canvas.before:
                 Color:
-                    rgba: 0.94,0.94,0.96,1
-                Rectangle:
+                    rgba: 0.11, 0.15, 0.22, 1
+                RoundedRectangle:
                     pos: self.pos
                     size: self.size
-            BoxLayout: # Header Text Layout
-                size_hint_y: None
-                height: self.minimum_height # Make sure this is what you intend
-                padding: [0, dp(10)]
-                Label:
-                    text: 'Daily Wellness Tracker'
-                    font_size: '26sp'
-                    bold: True
-                    color: 0.15,0.15,0.2,1
-                    halign: 'center'
-                    size_hint_y: None
-                    height: self.texture_size[1]
-            BoxLayout: # Date and Weight Inputs
-                orientation: 'vertical'
-                size_hint_y: None
-                height: self.minimum_height
-                spacing: dp(8)
-                BoxLayout: # Date row
-                    orientation: 'horizontal'
-                    height: dp(42)
-                    size_hint_y: None
-                    InputLabel:
-                        text: 'Date (YYYY-MM-DD):'
-                    ValueInput:
-                        id: date_input
-                        hint_text: 'e.g., {current_date_hint}'
-                BoxLayout: # Weight row
-                    orientation: 'horizontal'
-                    height: dp(42)
-                    size_hint_y: None
-                    InputLabel:
-                        text: 'Weight (lbs):'
-                    ValueInput:
-                        id: weight_input
-                        input_filter: 'float'
-                        hint_text: 'e.g., 150.5'
-            Label: # Meal Calories Section Title
-                text: "Meal Calories"
-                font_size: '18sp'
-                bold: True
-                size_hint_y: None
-                height: self.texture_size[1] + dp(15)
-                color: 0.25,0.25,0.3,1
-                padding: [0, dp(5)]
-            GridLayout: # Meal Inputs Grid
-                cols: 2
-                spacing: (dp(10),dp(8)) # Tuple for spacing (horizontal, vertical)
-                row_default_height: dp(42)
-                row_force_default: True
-                size_hint_y: None
-                height: self.minimum_height
-                InputLabel:
-                    text: 'Meal 1:'
-                ValueInput:
-                    id: meal1_input
-                    input_filter: 'int'
-                    hint_text: 'e.g., 500'
-                InputLabel:
-                    text: 'Meal 2:'
-                ValueInput:
-                    id: meal2_input
-                    input_filter: 'int'
-                    hint_text: 'e.g., 600'
-                InputLabel:
-                    text: 'Meal 3:'
-                ValueInput:
-                    id: meal3_input
-                    input_filter: 'int'
-                    hint_text: 'e.g., 700'
-                InputLabel:
-                    text: 'Meal 4 (Opt):' # Changed from (Optional) for brevity
-                ValueInput:
-                    id: meal4_input
-                    input_filter: 'int'
-                    hint_text: 'e.g., 200'
-                InputLabel:
-                    text: 'Meal 5 (Opt):' # Changed from (Optional) for brevity
-                ValueInput:
-                    id: meal5_input
-                    input_filter: 'int'
-                    hint_text: 'e.g., 150'
-                InputLabel:
-                    text: 'Meal 6 (Opt):'
-                ValueInput:
-                    id: meal6_input
-                    input_filter: 'int'
-                    hint_text: 'e.g., 100'
-            BoxLayout: # Total Calories Display
-                orientation: 'horizontal'
-                size_hint_y: None
-                height: dp(40)
-                padding: [0, dp(8)]
-                Label:
-                    text: 'Total Calories Today:'
-                    font_size: '16sp'
-                    bold: True
-                    color: 0.1,0.1,0.1,1
-                    halign: 'right'
-                    valign: 'middle'
-                    text_size: self.width, None
-                    size_hint_x: 0.65
-                Label:
-                    id: total_calories_label
-                    text: '0'
-                    font_size: '18sp'
-                    bold: True
-                    color: 0.1,0.4,0.75,1
+                    radius: [dp(14)]
+
+            GridLayout:
+                cols: 4
+                spacing: dp(4)
+                StatCellHeader:
+                    text: 'Window'
                     halign: 'left'
-                    valign: 'middle'
-                    size_hint_x: 0.35
-            BoxLayout: # Action Buttons (Save, Clear)
-                orientation: 'horizontal'
+                StatCellHeader:
+                    text: '7 Days'
+                StatCellHeader:
+                    text: '14 Days'
+                StatCellHeader:
+                    text: '30 Days'
+
+                StatCellHeader:
+                    text: 'Wt Change'
+                    halign: 'left'
+                StatCellValue:
+                    id: ps_weight_change_7
+                    text: 'N/A'
+                StatCellValue:
+                    id: ps_weight_change_14
+                    text: 'N/A'
+                StatCellValue:
+                    id: ps_weight_change_30
+                    text: 'N/A'
+
+                StatCellHeader:
+                    text: 'Avg Cals'
+                    halign: 'left'
+                StatCellValue:
+                    id: ps_avg_calories_7
+                    text: 'N/A'
+                StatCellValue:
+                    id: ps_avg_calories_14
+                    text: 'N/A'
+                StatCellValue:
+                    id: ps_avg_calories_30
+                    text: 'N/A'
+
+        # Daily Goal Adjuster Card
+        BoxLayout:
+            orientation: 'horizontal'
+            size_hint_y: None
+            height: dp(48)
+            padding: [dp(12), dp(6)]
+            spacing: dp(8)
+            canvas.before:
+                Color:
+                    rgba: 0.11, 0.15, 0.22, 1
+                RoundedRectangle:
+                    pos: self.pos
+                    size: self.size
+                    radius: [dp(12)]
+            Label:
+                text: 'Daily Goal: ' + root.daily_goal_text
+                font_size: '14sp'
+                bold: True
+                color: 0.92, 0.96, 1, 1
+                halign: 'left'
+                valign: 'middle'
+                text_size: self.size
+            WeightStepButton:
+                text: '-100'
+                width: dp(54)
+                on_release: root.adjust_goal(-100)
+            WeightStepButton:
+                text: '-50'
+                width: dp(48)
+                on_release: root.adjust_goal(-50)
+            WeightStepButton:
+                text: '+50'
+                width: dp(48)
+                on_release: root.adjust_goal(50)
+            WeightStepButton:
+                text: '+100'
+                width: dp(54)
+                on_release: root.adjust_goal(100)
+
+        Label:
+            text: 'Recent Days (Tap any day to edit)'
+            font_size: '14sp'
+            bold: True
+            color: 0.65, 0.73, 0.84, 1
+            size_hint_y: None
+            height: dp(24)
+            halign: 'left'
+            valign: 'middle'
+            text_size: self.size
+
+        ScrollView:
+            bar_width: dp(6)
+            bar_color: 0.3, 0.5, 0.8, 0.8
+            BoxLayout:
+                id: history_list_box
+                orientation: 'vertical'
+                spacing: dp(8)
                 size_hint_y: None
-                height: dp(48)
-                spacing: dp(10)
-                padding: [0, dp(15), 0, dp(10)] # Added top padding for consistency
-                ActionButton:
-                    text: 'Save Day'
-                    on_press: root.save_data()
-                    background_color: 0.25,0.65,0.35,1
-                ActionButton:
-                    text: 'Clear Fields'
-                    on_press: root.clear_inputs()
-                    background_color: 0.85,0.35,0.3,1
-            BoxLayout: # Status Label
-                size_hint_y: None
-                height: dp(30)
-                Label:
-                    id: status_label
-                    text: 'Initializing...'
-                    halign: 'center'
-                    font_size: '14sp'
-                    color: 0.3,0.3,0.3,1
-            BoxLayout: # View Full Progress Report Button
-                size_hint_y: None
-                height: dp(60) # Increased height slightly for better tap target
-                padding: [0, dp(10), 0, dp(10)] # Symmetrical padding
-                ActionButton:
-                    text: 'View Full Progress Report'
-                    on_press: app.root.current = 'progress'
-                    background_color: 0.2,0.5,0.8,1
-"""        
-        
+                height: self.minimum_height
+"""
+
+
+class CalorieTrackerApp(App):
+    def build(self):
+        self.title = "Calorie Tracker"
         try:
-            Builder.load_string(kv_string_content)
+            Builder.load_string(KV_STRING)
         except Exception as e_kv:
             Logger.exception("CRITICAL: Error loading KV string!")
             return Label(text=f"KV Load Error:\n{e_kv}", halign='center', valign='middle')
 
         sm = ScreenManager()
-        try:
-            sm.add_widget(CalorieTrackerScreen(name='calorie_tracker'))
-            sm.add_widget(ProgressScreen(name='progress'))
-        except Exception as e_screen:
-            Logger.exception("CRITICAL: Error creating/adding screens!")
-            return Label(text=f"Screen Setup Error:\n{e_screen}", halign='center', valign='middle')
+        sm.add_widget(CalorieTrackerScreen(name='calorie_tracker'))
+        sm.add_widget(ProgressScreen(name='progress'))
         return sm
 
     def on_start(self):
         global DB_FILE, STORAGE_ACCESS_OK
-        Logger.info("App on_start: Determining database path...")
         DB_FILE = get_database_path()
         if not DB_FILE or not STORAGE_ACCESS_OK:
             Logger.error("App on_start: Failed to get valid DB path or storage access.")
-            # Try to update UI status label if possible
-            self._update_status_on_critical_error("CRITICAL: Storage Error!")
             return
 
-        Logger.info("App on_start: Initializing database schema...")
-        if not init_db():
-            Logger.error("App on_start: Failed to initialize database schema.")
-            self._update_status_on_critical_error("CRITICAL: DB Init Error!")
-            # App might still run with in-memory data, or fail at DB operations
-            # return # Optional: stop if DB init is absolutely critical for any operation
-
-        Logger.info("App on_start: Triggering initial data load in CalorieTracker.")
-        Clock.schedule_once(self.trigger_tracker_load, 0.3) # Initial delay
-
-    def _update_status_on_critical_error(self, message):
-        """Helper to update status label if app UI is partially built."""
-        try:
-            if self.root and hasattr(self.root, 'get_screen'):
-                tracker_screen = self.root.get_screen('calorie_tracker')
-                if tracker_screen and tracker_screen.tracker_instance and \
-                   hasattr(tracker_screen.tracker_instance, 'ids') and \
-                   tracker_screen.tracker_instance.ids and \
-                   'status_label' in tracker_screen.tracker_instance.ids:
-                    tracker_screen.tracker_instance.ids.status_label.text = message
-                    tracker_screen.tracker_instance.ids.status_label.color = (1,0,0,1)
-        except Exception as e:
-            Logger.error(f"Error setting status label during critical error: {e}")
-
+        init_db()
+        Clock.schedule_once(self.trigger_tracker_load, 0.1)
 
     def trigger_tracker_load(self, dt):
         try:
             if self.root and hasattr(self.root, 'get_screen'):
                 tracker_screen = self.root.get_screen('calorie_tracker')
-                if tracker_screen:
-                    Logger.info(f"trigger_tracker_load: Found tracker_screen: {tracker_screen}")
-                    tracker_instance = tracker_screen.tracker_instance
-                    Logger.info(f"trigger_tracker_load: Checking tracker_instance: {tracker_instance}")
-                    if tracker_instance:
-                        Logger.info(f"trigger_tracker_load: tracker_instance type: {type(tracker_instance)}")
-                        if hasattr(tracker_instance, 'ids') and tracker_instance.ids:
-                            Logger.info(f"trigger_tracker_load: tracker_instance IDs are AVAILABLE. Proceeding with load.")
-                            tracker_instance.check_storage_and_load()
-                            # Trigger voice recognition after successful load
-                            if platform == 'android':
-                                Logger.info("trigger_tracker_load: Scheduling startup prompt.")
-                                Clock.schedule_once(self.show_startup_prompt, 0.5)
-                        else:
-                            Logger.warning(f"trigger_tracker_load: tracker_instance IDs NOT YET available. Rescheduling (delay: {dt + 0.2:.2f}s).")
-                            Clock.schedule_once(self.trigger_tracker_load, dt + 0.2)
-                            return
-                    else: Logger.error("trigger_tracker_load: CalorieTracker instance is None.")
-                else: Logger.error("trigger_tracker_load: Could not get 'calorie_tracker' screen.")
-            else: Logger.error("trigger_tracker_load: App root or screen manager not ready.")
-        except Exception as e:
-             Logger.exception(f"Error triggering tracker load: {e}")
-
-    def show_startup_prompt(self, dt=0):
-        from kivy.uix.popup import Popup
-        from kivy.uix.boxlayout import BoxLayout
-        from kivy.uix.label import Label
-        from kivy.uix.textinput import TextInput
-        from kivy.uix.button import Button
-
-        content = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(10))
-        content.add_widget(Label(text='What were the calories for your next meal?', size_hint_y=None, height=dp(30)))
-        
-        self.popup_input = TextInput(input_filter='int', multiline=False, size_hint_y=None, height=dp(40), hint_text='e.g. 500')
-        content.add_widget(self.popup_input)
-        
-        btn_layout = BoxLayout(orientation='horizontal', spacing=dp(10), size_hint_y=None, height=dp(40))
-        submit_btn = Button(text='Save', background_color=(0.25,0.65,0.35,1))
-        cancel_btn = Button(text='Cancel', background_color=(0.85,0.35,0.3,1))
-        
-        btn_layout.add_widget(submit_btn)
-        btn_layout.add_widget(cancel_btn)
-        content.add_widget(btn_layout)
-
-        self.startup_popup = Popup(title='Next Meal Entry', content=content, size_hint=(0.8, 0.4), auto_dismiss=False)
-        
-        submit_btn.bind(on_press=self.process_popup_result)
-        cancel_btn.bind(on_press=self.startup_popup.dismiss)
-        
-        self.startup_popup.open()
-        
-    def process_popup_result(self, instance):
-        text = self.popup_input.text.strip()
-        self.startup_popup.dismiss()
-        if text and text.isdigit():
-            calories = text
-            if self.root and hasattr(self.root, 'get_screen'):
-                tracker_screen = self.root.get_screen('calorie_tracker')
                 if tracker_screen and tracker_screen.tracker_instance:
-                    tracker = tracker_screen.tracker_instance
-                    if hasattr(tracker, 'ids') and tracker.ids:
-                        for i in range(1, 7):
-                            meal_id = f'meal{i}_input'
-                            if meal_id in tracker.ids:
-                                widget = tracker.ids[meal_id]
-                                if not widget.text.strip():
-                                    widget.text = calories
-                                    tracker.save_temp_data_on_change(widget, calories)
-                                    tracker.update_total_calories()
-                                    if 'status_label' in tracker.ids:
-                                        tracker.ids.status_label.text = f"Popup input: {calories} added to Meal {i}"
-                                        tracker.ids.status_label.color = (0.1, 0.7, 0.2, 1)
-                                    return
-                        
-                        if 'status_label' in tracker.ids:
-                            tracker.ids.status_label.text = "Popup input: All meal slots are full."
-                            tracker.ids.status_label.color = (0.8, 0.5, 0.1, 1)
+                    tracker_instance = tracker_screen.tracker_instance
+                    if hasattr(tracker_instance, 'ids') and tracker_instance.ids:
+                        tracker_instance.check_storage_and_load()
+                    else:
+                        Clock.schedule_once(self.trigger_tracker_load, 0.1)
+        except Exception as e:
+            Logger.exception(f"Error triggering tracker load: {e}")
+
 
 if __name__ == '__main__':
-    Logger.info("Application Start")
     CalorieTrackerApp().run()
