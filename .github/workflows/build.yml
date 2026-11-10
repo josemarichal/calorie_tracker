@@ -13,41 +13,60 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # Busted cache key with 'v2' to force a fresh download of the Android SDK
-    - name: Cache Buildozer global directory
-      uses: actions/cache@v4
-      with:
-        path: .buildozer_global
-        key: buildozer-global-v2-${{ hashFiles('buildozer.spec') }}
-        restore-keys: |
-          buildozer-global-v2-
-
-    - name: Cache Buildozer directory
-      uses: actions/cache@v4
-      with:
-        path: .buildozer
-        key: ${{ runner.os }}-v2-${{ hashFiles('buildozer.spec') }}
-
-    - name: Install dependencies
-      run: |
-        sudo apt update
-        sudo apt install -y git zip unzip openjdk-17-jdk python3-pip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev
-        pip3 install --user --upgrade buildozer cython virtualenv
-
     - name: Setup Java 17
-      uses: actions/setup-java@v3
+      uses: actions/setup-java@v4
       with:
         distribution: 'temurin'
         java-version: '17'
 
-    # Notice: the setup-android step is completely removed! 
-    # Buildozer is fully capable of downloading the exact SDK it needs automatically.
+    - name: Cache Buildozer global directory (~/.buildozer)
+      uses: actions/cache@v4
+      with:
+        path: ~/.buildozer
+        key: buildozer-global-v3-${{ hashFiles('buildozer.spec') }}
+        restore-keys: |
+          buildozer-global-v3-
+
+    - name: Cache project .buildozer directory
+      uses: actions/cache@v4
+      with:
+        path: .buildozer
+        key: ${{ runner.os }}-v3-${{ hashFiles('buildozer.spec') }}
+
+    - name: Install system and Python dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          git zip unzip openjdk-17-jdk python3-pip python3-dev python3-setuptools python3-venv \
+          autoconf automake libtool libltdl-dev pkg-config zlib1g-dev \
+          libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev \
+          ccache patch lld gettext
+        pip3 install --user --upgrade "cython<3.0" virtualenv buildozer
+
+    - name: Bootstrap Java 17 compatible Android SDK Command-Line Tools for Buildozer
+      run: |
+        SDK_DIR="$HOME/.buildozer/android/platform/android-sdk"
+        mkdir -p "$SDK_DIR"
+        # Buildozer 1.5.0 downloads legacy Java-8 commandlinetools (6514223) if tools/bin/sdkmanager is missing,
+        # which crashes under Java 17 with NoClassDefFoundError: javax/xml/bind/annotation/XmlSchema.
+        # Pre-populate tools/ with Java-17 compatible commandlinetools so Buildozer uses it seamlessly.
+        if [ ! -f "$SDK_DIR/tools/.java17_ready" ]; then
+          rm -rf "$SDK_DIR/tools" "$SDK_DIR/cmdline-tools"
+          curl -sSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o /tmp/cmdtools.zip
+          unzip -q /tmp/cmdtools.zip -d /tmp/cmdtools_extracted
+          mv /tmp/cmdtools_extracted/cmdline-tools "$SDK_DIR/tools"
+          mkdir -p "$SDK_DIR/cmdline-tools"
+          cp -r "$SDK_DIR/tools" "$SDK_DIR/cmdline-tools/latest"
+          touch "$SDK_DIR/tools/.java17_ready"
+          rm -rf /tmp/cmdtools.zip /tmp/cmdtools_extracted
+        fi
+        yes | "$SDK_DIR/tools/bin/sdkmanager" --sdk_root="$SDK_DIR" --licenses || true
+        "$SDK_DIR/tools/bin/sdkmanager" --sdk_root="$SDK_DIR" "platform-tools" "platforms;android-33" "build-tools;33.0.2"
 
     - name: Build with Buildozer
       run: |
-        export PATH=$PATH:~/.local/bin
-        # Do not override ANDROID_SDK_ROOT so Buildozer uses its internal one!
-        buildozer android debug
+        export PATH="$HOME/.local/bin:$PATH"
+        yes | buildozer android debug
 
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4
