@@ -41,15 +41,15 @@ jobs:
           autoconf automake libtool libltdl-dev pkg-config zlib1g-dev \
           libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev \
           ccache patch lld gettext
-        pip3 install --user --upgrade buildozer cython virtualenv "setuptools==69.5.1" "wheel==0.44.0"
+        pip3 install --user --upgrade buildozer cython virtualenv "setuptools==69.2.0" "wheel<0.45.0"
 
     - name: Build with Buildozer
       run: |
         set -o pipefail
         export PATH="$HOME/.local/bin:$PATH"
         cat << 'EOF' > /tmp/pip_constraints.txt
-        setuptools==69.5.1
-        wheel==0.44.0
+        setuptools==69.2.0
+        wheel<0.45.0
         EOF
         export PIP_CONSTRAINT=/tmp/pip_constraints.txt
         buildozer android debug 2>&1 | tee buildozer_output.log
@@ -57,11 +57,11 @@ jobs:
     - name: Show Build Error Tail on Failure
       if: failure()
       run: |
-        echo "### Last 100 lines of Buildozer Log" >> $GITHUB_STEP_SUMMARY
+        echo "### Last 120 lines of Buildozer Log (excluding ENV dump)" >> $GITHUB_STEP_SUMMARY
         echo '```text' >> $GITHUB_STEP_SUMMARY
-        tail -n 100 buildozer_output.log >> $GITHUB_STEP_SUMMARY
+        grep -v "^#     " buildozer_output.log | tail -n 120 >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
-        tail -n 100 buildozer_output.log
+        grep -v "^#     " buildozer_output.log | tail -n 120
 
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4
